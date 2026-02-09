@@ -537,17 +537,22 @@ pub fn run_eskf_on_arrays(
     for i in 0..n {
         let t_us = (times_s[i] * 1_000_000.0) as u64;
 
-        // Always run prediction when we have gyro + accel data
+        // Run prediction when we have gyro + at least one accel source
         let has_gyro = !gyro_x[i].is_nan();
         let has_accel_low = !accel_low_x[i].is_nan();
+        let has_accel_high = !accel_high_x[i].is_nan();
 
-        if has_gyro && has_accel_low {
+        if has_gyro && (has_accel_low || has_accel_high) {
             let g = Vector3::new(gyro_x[i], gyro_y[i], gyro_z[i]);
-            let al = Vector3::new(accel_low_x[i], accel_low_y[i], accel_low_z[i]);
-            let ah = if !accel_high_x[i].is_nan() {
+            let al = if has_accel_low {
+                Vector3::new(accel_low_x[i], accel_low_y[i], accel_low_z[i])
+            } else {
+                Vector3::new(accel_high_x[i], accel_high_y[i], accel_high_z[i])
+            };
+            let ah = if has_accel_high {
                 Vector3::new(accel_high_x[i], accel_high_y[i], accel_high_z[i])
             } else {
-                al // fallback: use low-g if high-g is unavailable
+                al
             };
             kf.predict(g, al, ah, t_us);
         }
