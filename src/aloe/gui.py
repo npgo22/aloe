@@ -599,7 +599,7 @@ def create_sensor_figures(df, sensor_cfg: SensorConfig, max_time=None):
     return fig
 
 
-def create_filter_figures(df, max_time=None):
+def create_filter_figures(df, max_time=None, launch_delay: float = 1.0):
     """Create filter output plots: 3D path comparison + position/velocity error over time."""
     if max_time is not None:
         df = df.filter(pl.col("time_s") <= max_time)
@@ -736,6 +736,116 @@ def create_filter_figures(df, max_time=None):
                 col=c,
             )
 
+    # ---------- Annotations: apogee, ignition, engine cutoff ----------
+    max_alt_idx = df["altitude_m"].arg_max()
+    apogee_time = df["time_s"][max_alt_idx] if max_alt_idx is not None else 0
+    apogee_alt = df["altitude_m"].max()
+
+    ignition_time = launch_delay if launch_delay > 0 else None
+
+    thrust_cutoff_time = None
+    if "thrust_N" in df.columns:
+        for i, thrust in enumerate(df["thrust_N"]):
+            if i > 0 and df["thrust_N"][i - 1] > 0 and thrust == 0:
+                thrust_cutoff_time = df["time_s"][i]
+                break
+
+    # Map (row, col) → axis index: (1,1)→1, (1,2)→2, (2,1)→3, (2,2)→4, (3,1)→5, (3,2)→6
+    for r in range(1, 4):
+        for c in range(1, 3):
+            ax_idx = (r - 1) * 2 + c
+            xref = f"x{ax_idx}" if ax_idx > 1 else "x"
+            yref = f"y{ax_idx} domain" if ax_idx > 1 else "y domain"
+
+            # Apogee
+            fig_2d.add_shape(
+                type="line",
+                x0=apogee_time,
+                x1=apogee_time,
+                y0=0,
+                y1=1,
+                xref=xref,
+                yref=yref,
+                line=dict(color="green", width=1.5, dash="dot"),
+                row=r,
+                col=c,
+            )
+            if r == 1 and c == 1:
+                fig_2d.add_annotation(
+                    x=apogee_time,
+                    y=0.92,
+                    xref=xref,
+                    yref=yref,
+                    text=f"Apogee: {apogee_time:.1f}s ({apogee_alt:.0f}m)",
+                    showarrow=False,
+                    font=dict(color="green", size=8),
+                    bgcolor="rgba(255,255,255,0.8)",
+                    bordercolor="green",
+                    borderwidth=1,
+                    row=r,
+                    col=c,
+                )
+
+            # Ignition
+            if ignition_time is not None:
+                fig_2d.add_shape(
+                    type="line",
+                    x0=ignition_time,
+                    x1=ignition_time,
+                    y0=0,
+                    y1=1,
+                    xref=xref,
+                    yref=yref,
+                    line=dict(color="orange", width=1.5, dash="dashdot"),
+                    row=r,
+                    col=c,
+                )
+                if r == 1 and c == 1:
+                    fig_2d.add_annotation(
+                        x=ignition_time,
+                        y=0.72,
+                        xref=xref,
+                        yref=yref,
+                        text=f"Ignition: {ignition_time:.1f}s",
+                        showarrow=False,
+                        font=dict(color="orange", size=8),
+                        bgcolor="rgba(255,255,255,0.8)",
+                        bordercolor="orange",
+                        borderwidth=1,
+                        row=r,
+                        col=c,
+                    )
+
+            # Engine cutoff
+            if thrust_cutoff_time is not None:
+                fig_2d.add_shape(
+                    type="line",
+                    x0=thrust_cutoff_time,
+                    x1=thrust_cutoff_time,
+                    y0=0,
+                    y1=1,
+                    xref=xref,
+                    yref=yref,
+                    line=dict(color="red", width=1.5, dash="dash"),
+                    row=r,
+                    col=c,
+                )
+                if r == 1 and c == 1:
+                    fig_2d.add_annotation(
+                        x=thrust_cutoff_time,
+                        y=0.52,
+                        xref=xref,
+                        yref=yref,
+                        text=f"Cutoff: {thrust_cutoff_time:.1f}s",
+                        showarrow=False,
+                        font=dict(color="red", size=8),
+                        bgcolor="rgba(255,255,255,0.8)",
+                        bordercolor="red",
+                        borderwidth=1,
+                        row=r,
+                        col=c,
+                    )
+
     # Add axis labels — only show x-axis title on bottom row to avoid overlap
     for r in range(1, 4):
         for c in range(1, 3):
@@ -810,7 +920,7 @@ def index_page():
             figs["2d"] = create_2d_figures(df, max_time=t_max, launch_delay=params.launch_delay)
             figs["sensor"] = create_sensor_figures(df, sensor_cfg, max_time=t_max)
             if filter_state["enabled"] and _CAN_FILTER and "eskf_pos_n" in df.columns:
-                f3, f2 = create_filter_figures(df, max_time=t_max)
+                f3, f2 = create_filter_figures(df, max_time=t_max, launch_delay=params.launch_delay)
                 figs["filter_3d"] = f3
                 figs["filter_2d"] = f2
                 figs["filter_err"] = compute_error_report(df)
@@ -879,6 +989,7 @@ def index_page():
             debounce_timer["t"] = None
             # Keep the existing base simulation, just regenerate sensor overlay
             if full_df["df"] is not None:
+
                 def _regen_sensors():
                     base_df = full_df["df"].select(
                         [
@@ -888,6 +999,7 @@ def index_page():
                         ]
                     )
                     return add_sensor_data(base_df, sensor_cfg)
+
                 full_df["df"] = await run.io_bound(_regen_sensors)
             await _render()
 
@@ -985,15 +1097,27 @@ def index_page():
                 value_labels[f.name].value = val  # type: ignore
         _debounced_update()
 
+    render_debounce: dict[str, ui.timer | None] = {"t": None}
+
     def on_time_change(e):
+        if render_debounce["t"] is not None:
+            render_debounce["t"].cancel()
+
         async def _do():
+            render_debounce["t"] = None
             await _render()
-        ui.timer(0.0, _do, once=True)
+
+        render_debounce["t"] = ui.timer(0.1, _do, once=True)
 
     def on_animate_toggle(e):
+        if render_debounce["t"] is not None:
+            render_debounce["t"].cancel()
+
         async def _do():
+            render_debounce["t"] = None
             await _render()
-        ui.timer(0.0, _do, once=True)
+
+        render_debounce["t"] = ui.timer(0.1, _do, once=True)
 
     def on_play():
         if timer_ref["timer"] is not None:
@@ -1027,19 +1151,23 @@ def index_page():
 
     async def export_xlsx():
         df = full_df["df"] if full_df["df"] is not None else await _run_sim()
+
         def _write():
             buf = io.BytesIO()
             df.write_excel(buf, worksheet="Flight Data")
             return buf.getvalue()
+
         data = await run.io_bound(_write)
         ui.download(data, "rocket_simulation.xlsx")
 
     async def export_csv():
         df = full_df["df"] if full_df["df"] is not None else await _run_sim()
+
         def _write():
             buf = io.BytesIO()
             df.write_csv(buf)
             return buf.getvalue()
+
         data = await run.io_bound(_write)
         ui.download(data, "rocket_simulation.csv")
 
@@ -1243,7 +1371,7 @@ def index_page():
             # Filter plots (initially empty, populated when filter is enabled)
             with ui.expansion("Kalman Filter Output", icon="filter_alt").classes("w-full").props("default-closed"):
                 if _CAN_FILTER and "eskf_pos_n" in df.columns:
-                    f3d, f2d = create_filter_figures(df)
+                    f3d, f2d = create_filter_figures(df, launch_delay=params.launch_delay)
                     plot_filter_3d = ui.plotly(f3d).classes("w-full")
                     plot_filter_2d = ui.plotly(f2d).classes("w-full")
                     filter_stats_container = ui.column().classes("w-full")

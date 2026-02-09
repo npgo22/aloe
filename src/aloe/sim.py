@@ -18,7 +18,7 @@ class RocketParams:
     wind_speed: float = 3.0  # Wind speed along X axis (m/s)
     wind_speed_z: float = 0.0  # Crosswind speed along Z axis (m/s)
     air_density: float = 1.225  # Ambient air density (kg/m³)
-    launch_delay: float = 0.0  # Pre-launch idle time on the pad (s)
+    launch_delay: float = 1.0  # Pre-launch idle time on the pad (s)
     spin_rate: float = 0.0  # Rocket roll rate around longitudinal axis (°/s)
     thrust_cant: float = 0.0  # Thrust vector cant angle from longitudinal axis (°)
 
@@ -415,7 +415,7 @@ def add_sensor_data(df: pl.DataFrame, sensor_cfg: SensorConfig) -> pl.DataFrame:
         # spikes because the direction of a near-zero velocity vector is
         # undefined.  Smoothly fade the computed rates to zero when speed is
         # below a threshold so the ESKF gets "no rotation" rather than garbage.
-        FADE_LO = 5.0   # m/s — start fading rates
+        FADE_LO = 5.0  # m/s — start fading rates
         FADE_HI = 15.0  # m/s — full-confidence rates
         alpha = np.clip((speed - FADE_LO) / (FADE_HI - FADE_LO), 0.0, 1.0)
         gyro_x = gyro_x * alpha

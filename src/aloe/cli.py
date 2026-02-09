@@ -60,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wind-speed", type=float, default=3.0)
     p.add_argument("--wind-speed-z", type=float, default=0.0)
     p.add_argument("--air-density", type=float, default=1.225)
-    p.add_argument("--launch-delay", type=float, default=0.0, help="Pre-launch idle time on the pad (s, default: 0)")
+    p.add_argument("--launch-delay", type=float, default=1.0, help="Pre-launch idle time on the pad (s, default: 1)")
     p.add_argument(
         "--spin-rate", type=float, default=0.0, help="Rocket roll rate around longitudinal axis (°/s, default: 0)"
     )
