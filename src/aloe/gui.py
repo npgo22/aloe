@@ -694,7 +694,14 @@ def create_filter_figures(df, max_time=None):
         ]
         for err, name, color, r, c in err_pairs:
             fig_2d.add_trace(
-                go.Scattergl(x=time, y=err, mode="lines", name=name, line=dict(color=color, width=1), showlegend=(r == 1 and c == 1)),
+                go.Scattergl(
+                    x=time,
+                    y=err,
+                    mode="lines",
+                    name=name,
+                    line=dict(color=color, width=1),
+                    showlegend=(r == 1 and c == 1),
+                ),
                 row=r,
                 col=c,
             )
@@ -717,7 +724,14 @@ def create_filter_figures(df, max_time=None):
         ]
         for err, name, color, r, c in qerr_pairs:
             fig_2d.add_trace(
-                go.Scattergl(x=time, y=err, mode="lines", name=name, line=dict(color=color, width=1), showlegend=(r == 1 and c == 1)),
+                go.Scattergl(
+                    x=time,
+                    y=err,
+                    mode="lines",
+                    name=name,
+                    line=dict(color=color, width=1),
+                    showlegend=(r == 1 and c == 1),
+                ),
                 row=r,
                 col=c,
             )
@@ -800,8 +814,7 @@ def index_page():
     def _render_error_table(err_df):
         """Render error statistics as a NiceGUI table."""
         columns = [
-            {"name": c, "label": c.replace("_", " ").title(), "field": c, "sortable": True}
-            for c in err_df.columns
+            {"name": c, "label": c.replace("_", " ").title(), "field": c, "sortable": True} for c in err_df.columns
         ]
         rows_data = []
         for row in err_df.iter_rows(named=True):
@@ -843,7 +856,13 @@ def index_page():
             debounce_timer["t"] = None
             # Keep the existing base simulation, just regenerate sensor overlay
             if full_df["df"] is not None:
-                base_df = full_df["df"].select([c for c in full_df["df"].columns if not c.startswith(("bmi088_", "adxl375_", "ms5611_", "lis3mdl_", "gps_"))])
+                base_df = full_df["df"].select(
+                    [
+                        c
+                        for c in full_df["df"].columns
+                        if not c.startswith(("bmi088_", "adxl375_", "ms5611_", "lis3mdl_", "gps_"))
+                    ]
+                )
                 full_df["df"] = add_sensor_data(base_df, sensor_cfg)
             _render()
 
@@ -904,7 +923,9 @@ def index_page():
                 .classes("flex-grow")
                 .on(
                     "update:model-value",
-                    _make_param_setter(attr, target_obj=target_obj, target_attr=target_attr, use_sensor_update=use_sensor_update),
+                    _make_param_setter(
+                        attr, target_obj=target_obj, target_attr=target_attr, use_sensor_update=use_sensor_update
+                    ),
                 )
             )
             slider_refs[attr] = s
@@ -915,7 +936,14 @@ def index_page():
                 .classes("w-20")
                 .on(
                     "update:model-value",
-                    _make_input_setter(attr, min_val, max_val, target_obj=target_obj, target_attr=target_attr, use_sensor_update=use_sensor_update),
+                    _make_input_setter(
+                        attr,
+                        min_val,
+                        max_val,
+                        target_obj=target_obj,
+                        target_attr=target_attr,
+                        use_sensor_update=use_sensor_update,
+                    ),
                 )
             )
 
@@ -1010,7 +1038,9 @@ def index_page():
                         ui.button(
                             preset_name,
                             on_click=lambda e, _n=preset_name: _apply_preset(_n),
-                        ).props("dense outline size=sm").classes("text-xs")
+                        ).props(
+                            "dense outline size=sm"
+                        ).classes("text-xs")
 
             # Tabbed panels for different setting categories
             with ui.tabs().classes("w-full") as tabs:
@@ -1124,6 +1154,7 @@ def index_page():
                 with ui.tab_panel(filter_tab):
                     ui.label("ES-EKF Sensor Fusion").classes("text-sm font-bold mb-2")
                     if _CAN_FILTER:
+
                         def _toggle_filter(e):
                             filter_state["enabled"] = e.value
                             _debounced_update()
@@ -1139,27 +1170,22 @@ def index_page():
                             "the on-wire telemetry format."
                         ).classes("text-xs text-gray-500 mt-2")
                     else:
-                        ui.label(
-                            "⚠ Native extension not available. "
-                            "Build with: maturin develop --release"
-                        ).classes("text-xs text-red-500")
+                        ui.label("⚠ Native extension not available. " "Build with: maturin develop --release").classes(
+                            "text-xs text-red-500"
+                        )
 
                 with ui.tab_panel(playback_tab):
                     ui.label("Playback Controls").classes("text-sm font-bold mb-2")
                     animate_checkbox = ui.checkbox("Animate over time", value=False, on_change=on_animate_toggle)
                     time_slider = ui.slider(min=0, max=10, step=0.1, value=10).props("label")
                     time_slider.on("update:model-value", on_time_change)
-                    play_button = ui.button("▶ Play", on_click=on_play).props("color=secondary").classes(
-                        "w-full mt-2"
-                    )
+                    play_button = ui.button("▶ Play", on_click=on_play).props("color=secondary").classes("w-full mt-2")
 
                     ui.separator().classes("my-3")
                     ui.label("Export Data").classes("text-sm font-bold mb-2")
                     with ui.row().classes("w-full gap-2"):
                         ui.button("Excel", on_click=export_xlsx).props("color=primary dense").classes("flex-grow")
-                        ui.button("CSV", on_click=export_csv).props("color=primary outline dense").classes(
-                            "flex-grow"
-                        )
+                        ui.button("CSV", on_click=export_csv).props("color=primary outline dense").classes("flex-grow")
 
         # ── Right column — charts fill remaining space ────────────
         with ui.column().classes("flex-grow overflow-y-auto p-2 relative"):

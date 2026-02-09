@@ -6,7 +6,6 @@ aloe cli [options]  → run batch parameter sweep from the command line
 
 import sys
 
-
 HELP_TEXT = """Usage:
 
     aloe gui            Launch NiceGUI web interface (default)

@@ -26,14 +26,8 @@ jobs:
       - name: Install project
         run: uv sync && uv run maturin develop --release
 
-      - name: Single run (no filter)
-        run: uv run aloe cli --single --no-sensors -o /tmp/aloe-test
-
-      - name: Single run with filter
-        run: uv run aloe cli --single --filter --filter-report -o /tmp/aloe-test
-
-      - name: Mini sweep (2 params × 2 steps)
-        run: uv run aloe cli --sweep-params dry_mass thrust --sweep-steps 2 --no-sensors -o /tmp/aloe-test
+      - name: Run all
+        run: uv run aloe cli -o /tmp/aloe-test
 
       - name: Verify outputs exist
         run: |

@@ -16,7 +16,6 @@ from dataclasses import dataclass
 import numpy as np
 import polars as pl
 
-
 # ---------------------------------------------------------------------------
 # Try importing the native module — fall back to a stub for import-time safety
 # (e.g. so that the GUI can still start if the Rust lib hasn't been compiled).
@@ -64,9 +63,7 @@ class FilterConfig:
 _EARTH_R = 6_371_000.0
 
 
-def _ned_to_geodetic(
-    n: float, e: float, d: float, lat0: float, lon0: float, alt0: float
-) -> tuple[float, float, float]:
+def _ned_to_geodetic(n: float, e: float, d: float, lat0: float, lon0: float, alt0: float) -> tuple[float, float, float]:
     """Convert NED offset (m) to lat/lon/alt (deg, deg, m MSL)."""
     lat = lat0 + math.degrees(n / _EARTH_R)
     lon = lon0 + math.degrees(e / (_EARTH_R * math.cos(math.radians(lat0))))
@@ -77,6 +74,7 @@ def _ned_to_geodetic(
 # ---------------------------------------------------------------------------
 # Main pipeline
 # ---------------------------------------------------------------------------
+
 
 def run_filter_pipeline(
     df: pl.DataFrame,
@@ -145,8 +143,8 @@ def run_filter_pipeline(
     al_raw_x = _col_f32("bmi088_accel_x_ms2")
     al_raw_y = _col_f32("bmi088_accel_y_ms2")
     al_raw_z = _col_f32("bmi088_accel_z_ms2")
-    al_n = al_raw_x                         # N = sim_X
-    al_e = al_raw_z                         # E = sim_Z
+    al_n = al_raw_x  # N = sim_X
+    al_e = al_raw_z  # E = sim_Z
     al_d = np.where(np.isnan(al_raw_y), np.nan, -al_raw_y - GRAVITY)  # D = -(sim_Y) - g
 
     # High-g accel: same transform
@@ -164,8 +162,8 @@ def run_filter_pipeline(
     mx_raw = _col_f32("lis3mdl_mag_x_gauss")
     my_raw = _col_f32("lis3mdl_mag_y_gauss")
     mz_raw = _col_f32("lis3mdl_mag_z_gauss")
-    mx = mx_raw          # N = sim_X
-    my = mz_raw          # E = sim_Z
+    mx = mx_raw  # N = sim_X
+    my = mz_raw  # E = sim_Z
     mz = np.where(np.isnan(my_raw), np.nan, -my_raw)  # D = -sim_Y
 
     # GPS position (remap: sim_X→N, sim_Z→E, -sim_Y→D)
@@ -186,34 +184,57 @@ def run_filter_pipeline(
 
     # --- Run the Rust ES-EKF ---
     (
-        _t, pn, pe, pd, vn, ve, vd,
-        qw, qx, qy, qk,
+        _t,
+        pn,
+        pe,
+        pd,
+        vn,
+        ve,
+        vd,
+        qw,
+        qx,
+        qy,
+        qk,
     ) = run_eskf_on_arrays(
         times.tolist(),
-        gyro_n.tolist(), gyro_e.tolist(), gyro_d.tolist(),
-        al_n.tolist(), al_e.tolist(), al_d.tolist(),
-        ah_n.tolist(), ah_e.tolist(), ah_d.tolist(),
+        gyro_n.tolist(),
+        gyro_e.tolist(),
+        gyro_d.tolist(),
+        al_n.tolist(),
+        al_e.tolist(),
+        al_d.tolist(),
+        ah_n.tolist(),
+        ah_e.tolist(),
+        ah_d.tolist(),
         baro.tolist(),
-        mx.tolist(), my.tolist(), mz.tolist(),
-        gps_pn.tolist(), gps_pe.tolist(), gps_pd.tolist(),
-        gps_vn.tolist(), gps_ve.tolist(), gps_vd.tolist(),
+        mx.tolist(),
+        my.tolist(),
+        mz.tolist(),
+        gps_pn.tolist(),
+        gps_pe.tolist(),
+        gps_pd.tolist(),
+        gps_vn.tolist(),
+        gps_ve.tolist(),
+        gps_vd.tolist(),
         cfg.ground_pressure_mbar,
         cfg.mag_declination_deg,
     )
 
     # Add ESKF columns
-    df = df.with_columns([
-        pl.Series("eskf_pos_n", pn, dtype=pl.Float32),
-        pl.Series("eskf_pos_e", pe, dtype=pl.Float32),
-        pl.Series("eskf_pos_d", pd, dtype=pl.Float32),
-        pl.Series("eskf_vel_n", vn, dtype=pl.Float32),
-        pl.Series("eskf_vel_e", ve, dtype=pl.Float32),
-        pl.Series("eskf_vel_d", vd, dtype=pl.Float32),
-        pl.Series("eskf_qw", qw, dtype=pl.Float32),
-        pl.Series("eskf_qx", qx, dtype=pl.Float32),
-        pl.Series("eskf_qy", qy, dtype=pl.Float32),
-        pl.Series("eskf_qz", qk, dtype=pl.Float32),
-    ])
+    df = df.with_columns(
+        [
+            pl.Series("eskf_pos_n", pn, dtype=pl.Float32),
+            pl.Series("eskf_pos_e", pe, dtype=pl.Float32),
+            pl.Series("eskf_pos_d", pd, dtype=pl.Float32),
+            pl.Series("eskf_vel_n", vn, dtype=pl.Float32),
+            pl.Series("eskf_vel_e", ve, dtype=pl.Float32),
+            pl.Series("eskf_vel_d", vd, dtype=pl.Float32),
+            pl.Series("eskf_qw", qw, dtype=pl.Float32),
+            pl.Series("eskf_qx", qx, dtype=pl.Float32),
+            pl.Series("eskf_qy", qy, dtype=pl.Float32),
+            pl.Series("eskf_qz", qk, dtype=pl.Float32),
+        ]
+    )
 
     # --- Compute Euler angles from quaternion (for quantization) ---
     qw_a = np.array(qw, dtype=np.float32)
@@ -245,31 +266,44 @@ def run_filter_pipeline(
     # Altitude AGL = -pos_d (NED down → AGL up)
     alt_agl = -pd_a
 
-    (q_pn, q_pe, q_alt_cm, q_vn, q_ve, q_vd,
-     q_roll, q_pitch, q_yaw) = quantize_flight_array(
-        pn_a.tolist(), pe_a.tolist(), alt_agl.tolist(),
-        vn_a.tolist(), ve_a.tolist(), vd_a.tolist(),
-        roll_deg.tolist(), pitch_deg.tolist(), yaw_deg.tolist(),
+    q_pn, q_pe, q_alt_cm, q_vn, q_ve, q_vd, q_roll, q_pitch, q_yaw = quantize_flight_array(
+        pn_a.tolist(),
+        pe_a.tolist(),
+        alt_agl.tolist(),
+        vn_a.tolist(),
+        ve_a.tolist(),
+        vd_a.tolist(),
+        roll_deg.tolist(),
+        pitch_deg.tolist(),
+        yaw_deg.tolist(),
     )
 
     # Dequantize to measure round-trip error
-    (dq_pn, dq_pe, dq_alt, dq_vn, dq_ve, dq_vd,
-     dq_roll, dq_pitch, dq_yaw) = dequantize_flight_array(
-        q_pn, q_pe, q_alt_cm, q_vn, q_ve, q_vd,
-        q_roll, q_pitch, q_yaw,
+    dq_pn, dq_pe, dq_alt, dq_vn, dq_ve, dq_vd, dq_roll, dq_pitch, dq_yaw = dequantize_flight_array(
+        q_pn,
+        q_pe,
+        q_alt_cm,
+        q_vn,
+        q_ve,
+        q_vd,
+        q_roll,
+        q_pitch,
+        q_yaw,
     )
 
-    df = df.with_columns([
-        pl.Series("q_flight_pos_n_m", dq_pn, dtype=pl.Float32),
-        pl.Series("q_flight_pos_e_m", dq_pe, dtype=pl.Float32),
-        pl.Series("q_flight_alt_m", dq_alt, dtype=pl.Float32),
-        pl.Series("q_flight_vel_n_ms", dq_vn, dtype=pl.Float32),
-        pl.Series("q_flight_vel_e_ms", dq_ve, dtype=pl.Float32),
-        pl.Series("q_flight_vel_d_ms", dq_vd, dtype=pl.Float32),
-        pl.Series("q_flight_roll_deg", dq_roll, dtype=pl.Float32),
-        pl.Series("q_flight_pitch_deg", dq_pitch, dtype=pl.Float32),
-        pl.Series("q_flight_yaw_deg", dq_yaw, dtype=pl.Float32),
-    ])
+    df = df.with_columns(
+        [
+            pl.Series("q_flight_pos_n_m", dq_pn, dtype=pl.Float32),
+            pl.Series("q_flight_pos_e_m", dq_pe, dtype=pl.Float32),
+            pl.Series("q_flight_alt_m", dq_alt, dtype=pl.Float32),
+            pl.Series("q_flight_vel_n_ms", dq_vn, dtype=pl.Float32),
+            pl.Series("q_flight_vel_e_ms", dq_ve, dtype=pl.Float32),
+            pl.Series("q_flight_vel_d_ms", dq_vd, dtype=pl.Float32),
+            pl.Series("q_flight_roll_deg", dq_roll, dtype=pl.Float32),
+            pl.Series("q_flight_pitch_deg", dq_pitch, dtype=pl.Float32),
+            pl.Series("q_flight_yaw_deg", dq_yaw, dtype=pl.Float32),
+        ]
+    )
 
     # --- Quantize Recovery Data (lat/lon/alt from NED) ---
     lat_arr = np.empty(n, dtype=np.float32)
@@ -277,26 +311,34 @@ def run_filter_pipeline(
     alt_msl_arr = np.empty(n, dtype=np.float32)
     for i in range(n):
         lat, lon, alt = _ned_to_geodetic(
-            pn_a[i], pe_a[i], pd_a[i],
-            cfg.home_lat_deg, cfg.home_lon_deg, cfg.home_alt_m,
+            pn_a[i],
+            pe_a[i],
+            pd_a[i],
+            cfg.home_lat_deg,
+            cfg.home_lon_deg,
+            cfg.home_alt_m,
         )
         lat_arr[i] = lat
         lon_arr[i] = lon
         alt_msl_arr[i] = alt
 
-    (qlat, qlon, qalt_m) = quantize_recovery_array(
-        lat_arr.tolist(), lon_arr.tolist(), alt_msl_arr.tolist(),
+    qlat, qlon, qalt_m = quantize_recovery_array(
+        lat_arr.tolist(),
+        lon_arr.tolist(),
+        alt_msl_arr.tolist(),
     )
-    (dqlat, dqlon, dqalt) = dequantize_recovery_array(qlat, qlon, qalt_m)
+    dqlat, dqlon, dqalt = dequantize_recovery_array(qlat, qlon, qalt_m)
 
-    df = df.with_columns([
-        pl.Series("eskf_lat_deg", lat_arr.tolist(), dtype=pl.Float32),
-        pl.Series("eskf_lon_deg", lon_arr.tolist(), dtype=pl.Float32),
-        pl.Series("eskf_alt_msl_m", alt_msl_arr.tolist(), dtype=pl.Float32),
-        pl.Series("q_recovery_lat_deg", dqlat, dtype=pl.Float32),
-        pl.Series("q_recovery_lon_deg", dqlon, dtype=pl.Float32),
-        pl.Series("q_recovery_alt_m", dqalt, dtype=pl.Float32),
-    ])
+    df = df.with_columns(
+        [
+            pl.Series("eskf_lat_deg", lat_arr.tolist(), dtype=pl.Float32),
+            pl.Series("eskf_lon_deg", lon_arr.tolist(), dtype=pl.Float32),
+            pl.Series("eskf_alt_msl_m", alt_msl_arr.tolist(), dtype=pl.Float32),
+            pl.Series("q_recovery_lat_deg", dqlat, dtype=pl.Float32),
+            pl.Series("q_recovery_lon_deg", dqlon, dtype=pl.Float32),
+            pl.Series("q_recovery_alt_m", dqalt, dtype=pl.Float32),
+        ]
+    )
 
     return df
 
@@ -305,9 +347,11 @@ def run_filter_pipeline(
 # Error statistics
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ErrorStats:
     """Error statistics for a single axis / quantity."""
+
     name: str
     mean_err: float = 0.0
     std_err: float = 0.0
@@ -325,7 +369,7 @@ def _compute_stats(name: str, truth: np.ndarray, estimate: np.ndarray) -> ErrorS
         mean_err=float(np.mean(err)),
         std_err=float(np.std(err)),
         max_abs_err=float(np.max(abs_err)),
-        rmse=float(np.sqrt(np.mean(err ** 2))),
+        rmse=float(np.sqrt(np.mean(err**2))),
         p95_abs_err=float(np.percentile(abs_err, 95)),
         n_samples=len(err),
     )
@@ -357,16 +401,18 @@ def compute_error_report(df: pl.DataFrame) -> pl.DataFrame:
     rows: list[dict] = []
 
     def _add(stage: str, stats: ErrorStats):
-        rows.append({
-            "stage": stage,
-            "quantity": stats.name,
-            "mean_error": stats.mean_err,
-            "std_error": stats.std_err,
-            "max_abs_error": stats.max_abs_err,
-            "rmse": stats.rmse,
-            "p95_abs_error": stats.p95_abs_err,
-            "n_samples": stats.n_samples,
-        })
+        rows.append(
+            {
+                "stage": stage,
+                "quantity": stats.name,
+                "mean_error": stats.mean_err,
+                "std_error": stats.std_err,
+                "max_abs_error": stats.max_abs_err,
+                "rmse": stats.rmse,
+                "p95_abs_error": stats.p95_abs_err,
+                "n_samples": stats.n_samples,
+            }
+        )
 
     # ── ESKF vs Truth ─────────────────────────────────────────────
     if "eskf_pos_n" in df.columns:
@@ -385,18 +431,19 @@ def compute_error_report(df: pl.DataFrame) -> pl.DataFrame:
         _add("eskf", _compute_stats("vel_d (m/s)", truth_vd, ekf_vd))
 
         # 3D position error
-        pos_err_3d = np.sqrt(
-            (ekf_pn - truth_n) ** 2 + (ekf_pe - truth_e) ** 2 + (ekf_pd - truth_d) ** 2
+        pos_err_3d = np.sqrt((ekf_pn - truth_n) ** 2 + (ekf_pe - truth_e) ** 2 + (ekf_pd - truth_d) ** 2)
+        _add(
+            "eskf",
+            ErrorStats(
+                name="pos_3d (m)",
+                mean_err=float(np.mean(pos_err_3d)),
+                std_err=float(np.std(pos_err_3d)),
+                max_abs_err=float(np.max(pos_err_3d)),
+                rmse=float(np.sqrt(np.mean(pos_err_3d**2))),
+                p95_abs_err=float(np.percentile(pos_err_3d, 95)),
+                n_samples=len(pos_err_3d),
+            ),
         )
-        _add("eskf", ErrorStats(
-            name="pos_3d (m)",
-            mean_err=float(np.mean(pos_err_3d)),
-            std_err=float(np.std(pos_err_3d)),
-            max_abs_err=float(np.max(pos_err_3d)),
-            rmse=float(np.sqrt(np.mean(pos_err_3d ** 2))),
-            p95_abs_err=float(np.percentile(pos_err_3d, 95)),
-            n_samples=len(pos_err_3d),
-        ))
 
     # ── Quantized Flight vs Truth ──────────────────────────────────
     if "q_flight_pos_n_m" in df.columns:
@@ -416,18 +463,19 @@ def compute_error_report(df: pl.DataFrame) -> pl.DataFrame:
 
         # 3D position error (using alt_agl = -pos_d)
         q_pd = -qalt
-        qpos_err_3d = np.sqrt(
-            (qpn - truth_n) ** 2 + (qpe - truth_e) ** 2 + (q_pd - truth_d) ** 2
+        qpos_err_3d = np.sqrt((qpn - truth_n) ** 2 + (qpe - truth_e) ** 2 + (q_pd - truth_d) ** 2)
+        _add(
+            "quantized_flight",
+            ErrorStats(
+                name="pos_3d (m)",
+                mean_err=float(np.mean(qpos_err_3d)),
+                std_err=float(np.std(qpos_err_3d)),
+                max_abs_err=float(np.max(qpos_err_3d)),
+                rmse=float(np.sqrt(np.mean(qpos_err_3d**2))),
+                p95_abs_err=float(np.percentile(qpos_err_3d, 95)),
+                n_samples=len(qpos_err_3d),
+            ),
         )
-        _add("quantized_flight", ErrorStats(
-            name="pos_3d (m)",
-            mean_err=float(np.mean(qpos_err_3d)),
-            std_err=float(np.std(qpos_err_3d)),
-            max_abs_err=float(np.max(qpos_err_3d)),
-            rmse=float(np.sqrt(np.mean(qpos_err_3d ** 2))),
-            p95_abs_err=float(np.percentile(qpos_err_3d, 95)),
-            n_samples=len(qpos_err_3d),
-        ))
 
     # ── Quantization-only error (filter output vs quant round-trip) ─
     if "eskf_pos_n" in df.columns and "q_flight_pos_n_m" in df.columns:
@@ -466,16 +514,19 @@ def compute_error_report(df: pl.DataFrame) -> pl.DataFrame:
         # Convert lat/lon error to metres for interpretability
         lat_err_m = (qrlat - eskf_lat) * (np.pi / 180.0) * _EARTH_R
         lon_err_m = (qrlon - eskf_lon) * (np.pi / 180.0) * _EARTH_R * np.cos(np.radians(eskf_lat))
-        horiz_err_m = np.sqrt(lat_err_m ** 2 + lon_err_m ** 2)
-        _add("quant_recovery", ErrorStats(
-            name="horiz_pos (m)",
-            mean_err=float(np.mean(horiz_err_m)),
-            std_err=float(np.std(horiz_err_m)),
-            max_abs_err=float(np.max(horiz_err_m)),
-            rmse=float(np.sqrt(np.mean(horiz_err_m ** 2))),
-            p95_abs_err=float(np.percentile(horiz_err_m, 95)),
-            n_samples=len(horiz_err_m),
-        ))
+        horiz_err_m = np.sqrt(lat_err_m**2 + lon_err_m**2)
+        _add(
+            "quant_recovery",
+            ErrorStats(
+                name="horiz_pos (m)",
+                mean_err=float(np.mean(horiz_err_m)),
+                std_err=float(np.std(horiz_err_m)),
+                max_abs_err=float(np.max(horiz_err_m)),
+                rmse=float(np.sqrt(np.mean(horiz_err_m**2))),
+                p95_abs_err=float(np.percentile(horiz_err_m, 95)),
+                n_samples=len(horiz_err_m),
+            ),
+        )
 
     return pl.DataFrame(rows)
 
@@ -503,13 +554,19 @@ def write_error_report_xlsx(
         # Sheet 2: Positions (truth, ESKF, quantized)
         pos_cols = [
             "time_s",
-            "position_x_m", "altitude_m", "position_z_m",
+            "position_x_m",
+            "altitude_m",
+            "position_z_m",
         ]
         eskf_pos_cols = ["eskf_pos_n", "eskf_pos_e", "eskf_pos_d"]
         q_pos_cols = ["q_flight_pos_n_m", "q_flight_pos_e_m", "q_flight_alt_m"]
         recovery_cols = [
-            "eskf_lat_deg", "eskf_lon_deg", "eskf_alt_msl_m",
-            "q_recovery_lat_deg", "q_recovery_lon_deg", "q_recovery_alt_m",
+            "eskf_lat_deg",
+            "eskf_lon_deg",
+            "eskf_alt_msl_m",
+            "q_recovery_lat_deg",
+            "q_recovery_lon_deg",
+            "q_recovery_alt_m",
         ]
         all_pos = pos_cols + [c for c in eskf_pos_cols + q_pos_cols + recovery_cols if c in flight_df.columns]
         pos_df = flight_df.select([c for c in all_pos if c in flight_df.columns])
@@ -542,7 +599,9 @@ def write_error_report_xlsx(
         # Sheet 4: Attitude (quaternion + quantized Euler)
         att_cols = ["time_s"]
         att_cols += [c for c in ["eskf_qw", "eskf_qx", "eskf_qy", "eskf_qz"] if c in flight_df.columns]
-        att_cols += [c for c in ["q_flight_roll_deg", "q_flight_pitch_deg", "q_flight_yaw_deg"] if c in flight_df.columns]
+        att_cols += [
+            c for c in ["q_flight_roll_deg", "q_flight_pitch_deg", "q_flight_yaw_deg"] if c in flight_df.columns
+        ]
         att_df = flight_df.select([c for c in att_cols if c in flight_df.columns])
 
         ws_att = wb.add_worksheet("Attitude")

@@ -10,6 +10,7 @@ from aloe.params import get_param_ranges
 
 try:
     from aloe.filter import FilterConfig, run_filter_pipeline, compute_error_report, write_error_report_xlsx
+
     _HAS_FILTER = True
 except Exception:
     _HAS_FILTER = False
@@ -59,8 +60,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wind-speed-z", type=float, default=0.0)
     p.add_argument("--air-density", type=float, default=1.225)
     p.add_argument("--launch-delay", type=float, default=0.0, help="Pre-launch idle time on the pad (s, default: 0)")
-    p.add_argument("--spin-rate", type=float, default=0.0, help="Rocket roll rate around longitudinal axis (°/s, default: 0)")
-    p.add_argument("--thrust-cant", type=float, default=0.0, help="Thrust vector cant angle from body axis (°, default: 0)")
+    p.add_argument(
+        "--spin-rate", type=float, default=0.0, help="Rocket roll rate around longitudinal axis (°/s, default: 0)"
+    )
+    p.add_argument(
+        "--thrust-cant", type=float, default=0.0, help="Thrust vector cant angle from body axis (°, default: 0)"
+    )
 
     # ── Sweep control ────────────────────────────────────────────
     p.add_argument(
@@ -84,25 +89,38 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── Filter / Quantization ────────────────────────────────────
     p.add_argument(
-        "--filter", action="store_true",
+        "--filter",
+        action="store_true",
         help="Run ES-EKF sensor fusion + telemetry quantization (requires aloe_core native lib)",
     )
     p.add_argument(
-        "--filter-report", action="store_true",
+        "--filter-report",
+        action="store_true",
         help="Generate XLSX error report (implies --filter)",
     )
     p.add_argument(
-        "--mag-declination", type=float, default=0.0,
+        "--mag-declination",
+        type=float,
+        default=0.0,
         help="Magnetic declination at launch site (degrees, default: 0)",
     )
     p.add_argument(
-        "--home-lat", type=float, default=35.0, help="Home latitude (deg, default: 35.0)",
+        "--home-lat",
+        type=float,
+        default=35.0,
+        help="Home latitude (deg, default: 35.0)",
     )
     p.add_argument(
-        "--home-lon", type=float, default=-106.0, help="Home longitude (deg, default: -106.0)",
+        "--home-lon",
+        type=float,
+        default=-106.0,
+        help="Home longitude (deg, default: -106.0)",
     )
     p.add_argument(
-        "--home-alt", type=float, default=1500.0, help="Home altitude MSL (m, default: 1500)",
+        "--home-alt",
+        type=float,
+        default=1500.0,
+        help="Home altitude MSL (m, default: 1500)",
     )
     return p
 

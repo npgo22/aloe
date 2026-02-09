@@ -12,19 +12,19 @@ const GPS_SCALING: f32 = 10_000_000.0;
 #[derive(Clone, Copy, Debug)]
 pub struct PyFlightData {
     #[pyo3(get)]
-    pub pos_n_m: i16,          // ±32 km, 1 m resolution
+    pub pos_n_m: i16, // ±32 km, 1 m resolution
     #[pyo3(get)]
     pub pos_e_m: i16,
     #[pyo3(get)]
-    pub alt_agl_cm: i32,       // cm resolution
+    pub alt_agl_cm: i32, // cm resolution
     #[pyo3(get)]
-    pub vel_n_ds: i16,         // 0.1 m/s resolution
+    pub vel_n_ds: i16, // 0.1 m/s resolution
     #[pyo3(get)]
     pub vel_e_ds: i16,
     #[pyo3(get)]
     pub vel_d_ds: i16,
     #[pyo3(get)]
-    pub roll: u8,              // 0..255 → 0..360°
+    pub roll: u8, // 0..255 → 0..360°
     #[pyo3(get)]
     pub pitch: u8,
     #[pyo3(get)]
@@ -49,18 +49,31 @@ impl PyFlightData {
         status: u8,
     ) -> Self {
         Self {
-            pos_n_m, pos_e_m, alt_agl_cm,
-            vel_n_ds, vel_e_ds, vel_d_ds,
-            roll, pitch, yaw, status,
+            pos_n_m,
+            pos_e_m,
+            alt_agl_cm,
+            vel_n_ds,
+            vel_e_ds,
+            vel_d_ds,
+            roll,
+            pitch,
+            yaw,
+            status,
         }
     }
 
     fn __repr__(&self) -> String {
         format!(
             "FlightData(pos=({},{},{}cm), vel=({},{},{} ds), rpy=({},{},{}))",
-            self.pos_n_m, self.pos_e_m, self.alt_agl_cm,
-            self.vel_n_ds, self.vel_e_ds, self.vel_d_ds,
-            self.roll, self.pitch, self.yaw,
+            self.pos_n_m,
+            self.pos_e_m,
+            self.alt_agl_cm,
+            self.vel_n_ds,
+            self.vel_e_ds,
+            self.vel_d_ds,
+            self.roll,
+            self.pitch,
+            self.yaw,
         )
     }
 }
@@ -73,7 +86,7 @@ impl PyFlightData {
 #[derive(Clone, Copy, Debug)]
 pub struct PyRecoveryData {
     #[pyo3(get)]
-    pub lat_i32: i32,   // deg * 1e7
+    pub lat_i32: i32, // deg * 1e7
     #[pyo3(get)]
     pub lon_i32: i32,
     #[pyo3(get)]
@@ -81,14 +94,20 @@ pub struct PyRecoveryData {
     #[pyo3(get)]
     pub sat_info: u8,
     #[pyo3(get)]
-    pub batt_v: u8,     // 0.1 V
+    pub batt_v: u8, // 0.1 V
 }
 
 #[pymethods]
 impl PyRecoveryData {
     #[new]
     fn new(lat_i32: i32, lon_i32: i32, alt_msl_m: i16, sat_info: u8, batt_v: u8) -> Self {
-        Self { lat_i32, lon_i32, alt_msl_m, sat_info, batt_v }
+        Self {
+            lat_i32,
+            lon_i32,
+            alt_msl_m,
+            sat_info,
+            batt_v,
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -119,9 +138,17 @@ pub fn quantize_flight_array(
     roll_deg: Vec<f32>,
     pitch_deg: Vec<f32>,
     yaw_deg: Vec<f32>,
-) -> (Vec<i16>, Vec<i16>, Vec<i32>,
-      Vec<i16>, Vec<i16>, Vec<i16>,
-      Vec<u8>, Vec<u8>, Vec<u8>) {
+) -> (
+    Vec<i16>,
+    Vec<i16>,
+    Vec<i32>,
+    Vec<i16>,
+    Vec<i16>,
+    Vec<i16>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+) {
     let n = pos_n.len();
     let mut q_pn = Vec::with_capacity(n);
     let mut q_pe = Vec::with_capacity(n);
@@ -161,9 +188,17 @@ pub fn dequantize_flight_array(
     q_roll: Vec<u8>,
     q_pitch: Vec<u8>,
     q_yaw: Vec<u8>,
-) -> (Vec<f32>, Vec<f32>, Vec<f32>,
-      Vec<f32>, Vec<f32>, Vec<f32>,
-      Vec<f32>, Vec<f32>, Vec<f32>) {
+) -> (
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+) {
     let n = q_pn.len();
     let mut pn = Vec::with_capacity(n);
     let mut pe = Vec::with_capacity(n);
@@ -176,10 +211,10 @@ pub fn dequantize_flight_array(
     let mut yaw = Vec::with_capacity(n);
 
     for i in 0..n {
-        pn.push(q_pn[i] as f32);          // 1 m resolution, no scaling
+        pn.push(q_pn[i] as f32); // 1 m resolution, no scaling
         pe.push(q_pe[i] as f32);
         alt.push(q_alt[i] as f32 / 100.0); // cm → m
-        vn.push(q_vn[i] as f32 / 10.0);   // 0.1 m/s → m/s
+        vn.push(q_vn[i] as f32 / 10.0); // 0.1 m/s → m/s
         ve.push(q_ve[i] as f32 / 10.0);
         vd.push(q_vd[i] as f32 / 10.0);
         roll.push(u8_to_deg(q_roll[i]));

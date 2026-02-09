@@ -38,11 +38,11 @@ type ErrorCovariance = SMatrix<f32, 15, 15>;
 // ---------------------------------------------------------------------------
 #[derive(Clone, Copy, Debug)]
 pub struct NominalState {
-    pub position: Vector3<f32>,            // NED (m)
-    pub velocity: Vector3<f32>,            // NED (m/s)
-    pub orientation: UnitQuaternion<f32>,   // Body → NED
-    pub accel_bias: Vector3<f32>,          // Body frame
-    pub gyro_bias: Vector3<f32>,           // Body frame
+    pub position: Vector3<f32>,           // NED (m)
+    pub velocity: Vector3<f32>,           // NED (m/s)
+    pub orientation: UnitQuaternion<f32>, // Body → NED
+    pub accel_bias: Vector3<f32>,         // Body frame
+    pub gyro_bias: Vector3<f32>,          // Body frame
 }
 
 impl NominalState {
@@ -174,11 +174,8 @@ impl RocketEsKf {
         let angle = w_unbiased.norm() * dt;
         if angle > 1e-8 {
             let axis = w_unbiased.normalize();
-            let dq = UnitQuaternion::from_axis_angle(
-                &nalgebra::Unit::new_normalize(axis),
-                angle,
-            );
-            self.state.orientation = self.state.orientation * dq;
+            let dq = UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle);
+            self.state.orientation *= dq;
         }
 
         // --- Covariance Propagation ---
@@ -202,11 +199,13 @@ impl RocketEsKf {
         let gnd2 = GYRO_NOISE_DENSITY * GYRO_NOISE_DENSITY;
         q.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(and2 * dt * dt);
         q.fixed_view_mut::<3, 3>(6, 6).fill_diagonal(gnd2 * dt * dt);
-        q.fixed_view_mut::<3, 3>(9, 9).fill_diagonal(ACCEL_BIAS_INSTABILITY * dt);
-        q.fixed_view_mut::<3, 3>(12, 12).fill_diagonal(GYRO_BIAS_INSTABILITY * dt);
+        q.fixed_view_mut::<3, 3>(9, 9)
+            .fill_diagonal(ACCEL_BIAS_INSTABILITY * dt);
+        q.fixed_view_mut::<3, 3>(12, 12)
+            .fill_diagonal(GYRO_BIAS_INSTABILITY * dt);
 
-        self.p_cov = &f_x * &self.p_cov * f_x.transpose() + q;
-        self.p_cov = (&self.p_cov + self.p_cov.transpose()) * 0.5;
+        self.p_cov = f_x * self.p_cov * f_x.transpose() + q;
+        self.p_cov = (self.p_cov + self.p_cov.transpose()) * 0.5;
 
         self.push_history(time_us);
     }
@@ -225,8 +224,7 @@ impl RocketEsKf {
         // The exponent R*L/(g*M) ≈ 0.190285 is baked into powf_baro's LUT.
         let lapse_pos: f32 = 0.0065;
         let alt_above_ground =
-            (STD_TEMP_K / lapse_pos)
-                * (1.0 - powf_baro(pressure / self.ground_pressure));
+            (STD_TEMP_K / lapse_pos) * (1.0 - powf_baro(pressure / self.ground_pressure));
         let z_meas = -alt_above_ground; // NED: D = -altitude
         let innovation = z_meas - self.state.position.z;
         let r = SMatrix::<f32, 1, 1>::new(R_BARO);
@@ -291,10 +289,10 @@ impl RocketEsKf {
         innovation: &SVector<f32, D>,
         r: &SMatrix<f32, D, D>,
     ) {
-        let s = h * &self.p_cov * h.transpose() + r;
+        let s = h * self.p_cov * h.transpose() + r;
         if let Some(s_inv) = s.try_inverse() {
-            let k = &self.p_cov * h.transpose() * s_inv;
-            let dx = &k * innovation;
+            let k = self.p_cov * h.transpose() * s_inv;
+            let dx = k * innovation;
 
             self.state.position += dx.fixed_rows::<3>(0).into_owned();
             self.state.velocity += dx.fixed_rows::<3>(3).into_owned();
@@ -303,20 +301,18 @@ impl RocketEsKf {
             if theta.norm() > 1e-9 {
                 let axis = theta.normalize();
                 let dq = UnitQuaternion::from_axis_angle(
-                    &nalgebra::Unit::new_normalize(
-                        Vector3::new(axis.x, axis.y, axis.z),
-                    ),
+                    &nalgebra::Unit::new_normalize(Vector3::new(axis.x, axis.y, axis.z)),
                     theta.norm(),
                 );
-                self.state.orientation = self.state.orientation * dq;
+                self.state.orientation *= dq;
             }
 
             self.state.accel_bias += dx.fixed_rows::<3>(9).into_owned();
             self.state.gyro_bias += dx.fixed_rows::<3>(12).into_owned();
 
             let i = ErrorCovariance::identity();
-            self.p_cov = (&i - &k * h) * &self.p_cov;
-            self.p_cov = (&self.p_cov + self.p_cov.transpose()) * 0.5;
+            self.p_cov = (i - k * h) * self.p_cov;
+            self.p_cov = (self.p_cov + self.p_cov.transpose()) * 0.5;
         }
     }
 
@@ -325,8 +321,7 @@ impl RocketEsKf {
         if mag > HIGH_G_THRESHOLD {
             high
         } else if mag > LOW_G_THRESHOLD {
-            let alpha =
-                (mag - LOW_G_THRESHOLD) / (HIGH_G_THRESHOLD - LOW_G_THRESHOLD);
+            let alpha = (mag - LOW_G_THRESHOLD) / (HIGH_G_THRESHOLD - LOW_G_THRESHOLD);
             low.scale(1.0 - alpha) + high.scale(alpha)
         } else {
             low
@@ -355,11 +350,7 @@ impl RocketEsKf {
         for i in 0..self.history_count {
             let idx = (self.history_head + BUFFER_SIZE - 1 - i) % BUFFER_SIZE;
             let snap = &self.history[idx];
-            let diff = if snap.timestamp_us > target_us {
-                snap.timestamp_us - target_us
-            } else {
-                target_us - snap.timestamp_us
-            };
+            let diff = snap.timestamp_us.abs_diff(target_us);
             if diff < 2000 {
                 return Some(*snap);
             }
@@ -367,12 +358,7 @@ impl RocketEsKf {
         None
     }
 
-    fn geodetic_to_ned(
-        lat: f32,
-        lon: f32,
-        alt: f32,
-        ref_geo: GeoReference,
-    ) -> Vector3<f32> {
+    fn geodetic_to_ned(lat: f32, lon: f32, alt: f32, ref_geo: GeoReference) -> Vector3<f32> {
         let lat_rad = lat.to_radians();
         let lon_rad = lon.to_radians();
         let d_lat = lat_rad - ref_geo.lat0;
@@ -385,11 +371,7 @@ impl RocketEsKf {
 }
 
 fn skew_symmetric(v: Vector3<f32>) -> Matrix3<f32> {
-    Matrix3::new(
-        0.0, -v.z, v.y,
-        v.z, 0.0, -v.x,
-        -v.y, v.x, 0.0,
-    )
+    Matrix3::new(0.0, -v.z, v.y, v.z, 0.0, -v.x, -v.y, v.x, 0.0)
 }
 
 // =========================================================================
@@ -416,13 +398,7 @@ impl PyRocketEsKf {
     }
 
     /// Predict step.  Arrays are [x, y, z].
-    fn predict(
-        &mut self,
-        gyro: [f32; 3],
-        accel_low: [f32; 3],
-        accel_high: [f32; 3],
-        time_us: u64,
-    ) {
+    fn predict(&mut self, gyro: [f32; 3], accel_low: [f32; 3], accel_high: [f32; 3], time_us: u64) {
         self.inner.predict(
             Vector3::from(gyro),
             Vector3::from(accel_low),
@@ -447,13 +423,8 @@ impl PyRocketEsKf {
         vel_ned: [f32; 3],
         gps_time_us: u64,
     ) {
-        self.inner.update_gps(
-            lat_deg,
-            lon_deg,
-            alt_m,
-            Vector3::from(vel_ned),
-            gps_time_us,
-        );
+        self.inner
+            .update_gps(lat_deg, lon_deg, alt_m, Vector3::from(vel_ned), gps_time_us);
     }
 
     /// Return (position_ned, velocity_ned, orientation_quat_wxyz)
@@ -525,9 +496,19 @@ pub fn run_eskf_on_arrays(
     // Config
     ground_pressure: f32,
     mag_declination_deg: f32,
-) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>,
-      Vec<f32>, Vec<f32>, Vec<f32>,
-      Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+) -> (
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+    Vec<f32>,
+) {
     let n = times_s.len();
     let mut kf = RocketEsKf::new(ground_pressure, mag_declination_deg);
 
@@ -573,10 +554,10 @@ pub fn run_eskf_on_arrays(
             // GPS is already in NED metres from Python sim; we do a direct
             // position/velocity update (bypassing geodetic conversion).
             // Build a pseudo-GPS observation matrix:
-            let pos_inn = Vector3::new(gps_pos_x[i], gps_pos_y[i], gps_pos_z[i])
-                - kf.state.position;
-            let vel_inn = Vector3::new(gps_vel_x[i], gps_vel_y[i], gps_vel_z[i])
-                - kf.state.velocity;
+            let pos_inn =
+                Vector3::new(gps_pos_x[i], gps_pos_y[i], gps_pos_z[i]) - kf.state.position;
+            let vel_inn =
+                Vector3::new(gps_vel_x[i], gps_vel_y[i], gps_vel_z[i]) - kf.state.velocity;
 
             let mut innovation = SVector::<f32, 6>::zeros();
             innovation.fixed_rows_mut::<3>(0).copy_from(&pos_inn);
@@ -609,8 +590,6 @@ pub fn run_eskf_on_arrays(
     }
 
     (
-        out_time, out_pn, out_pe, out_pd,
-        out_vn, out_ve, out_vd,
-        out_qw, out_qx, out_qy, out_qk,
+        out_time, out_pn, out_pe, out_pd, out_vn, out_ve, out_vd, out_qw, out_qx, out_qy, out_qk,
     )
 }

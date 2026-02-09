@@ -193,7 +193,7 @@ mod tests {
     max_rel = 0.0
     for i in range(1, 100_001):
         x = i / 100_000
-        expected = x ** BARO_EXPONENT
+        expected = x**BARO_EXPONENT
         idx = round(x * (BARO_N - 1))
         got = (idx / (BARO_N - 1)) ** BARO_EXPONENT if idx > 0 else 0.0
         rel = abs(got - expected) / expected if expected > 1e-10 else 0.0
