@@ -664,8 +664,8 @@ def create_filter_figures(df, max_time=None):
             "Velocity East Error",
             "Velocity Down Error",
         ),
-        vertical_spacing=0.10,
-        horizontal_spacing=0.10,
+        vertical_spacing=0.14,
+        horizontal_spacing=0.12,
     )
 
     time = df["time_s"]
@@ -736,10 +736,13 @@ def create_filter_figures(df, max_time=None):
                 col=c,
             )
 
-    # Add zero lines and axis labels
+    # Add axis labels — only show x-axis title on bottom row to avoid overlap
     for r in range(1, 4):
         for c in range(1, 3):
-            fig_2d.update_xaxes(title_text="Time (s)", row=r, col=c)
+            if r == 3:
+                fig_2d.update_xaxes(title_text="Time (s)", row=r, col=c)
+            else:
+                fig_2d.update_xaxes(title_text="", row=r, col=c)
     fig_2d.update_yaxes(title_text="Error (m)", row=1, col=1)
     fig_2d.update_yaxes(title_text="Error (m)", row=1, col=2)
     fig_2d.update_yaxes(title_text="Error (m)", row=2, col=1)
@@ -748,10 +751,11 @@ def create_filter_figures(df, max_time=None):
     fig_2d.update_yaxes(title_text="Error (m/s)", row=3, col=2)
 
     fig_2d.update_layout(
-        height=750,
+        height=850,
         showlegend=True,
         title_text="Filter Error vs Truth",
         title_font_size=16,
+        margin=dict(t=60, b=40),
     )
 
     return fig_3d, fig_2d
