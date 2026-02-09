@@ -399,6 +399,8 @@ def add_sensor_data(df: pl.DataFrame, sensor_cfg: SensorConfig) -> pl.DataFrame:
         vx = df["velocity_x_ms"].to_numpy()
         vy = df["velocity_y_ms"].to_numpy()
         vz = df["velocity_z_ms"].to_numpy()
+        speed = np.sqrt(vx**2 + vy**2 + vz**2)
+
         # pitch rate ≈ d/dt(atan2(vy, vx)) in °/s
         pitch = np.degrees(np.arctan2(vy, np.sqrt(vx**2 + vz**2)))
         yaw = np.degrees(np.arctan2(vz, vx))
@@ -408,6 +410,16 @@ def add_sensor_data(df: pl.DataFrame, sensor_cfg: SensorConfig) -> pl.DataFrame:
         gyro_x = np.gradient(pitch, dt)  # pitch rate
         gyro_y = np.gradient(yaw, dt)  # yaw rate
         gyro_z = roll_truth  # roll rate = spin_rate
+
+        # Near apogee (speed ≈ 0) the atan2 derivatives produce unrealistic
+        # spikes because the direction of a near-zero velocity vector is
+        # undefined.  Smoothly fade the computed rates to zero when speed is
+        # below a threshold so the ESKF gets "no rotation" rather than garbage.
+        FADE_LO = 5.0   # m/s — start fading rates
+        FADE_HI = 15.0  # m/s — full-confidence rates
+        alpha = np.clip((speed - FADE_LO) / (FADE_HI - FADE_LO), 0.0, 1.0)
+        gyro_x = gyro_x * alpha
+        gyro_y = gyro_y * alpha
 
         _add_sensor_col("bmi088_gyro_x_dps", gyro_x, sigma, hz, lat)
         _add_sensor_col("bmi088_gyro_y_dps", gyro_y, sigma, hz, lat)

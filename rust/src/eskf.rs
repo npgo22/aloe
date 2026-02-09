@@ -10,10 +10,17 @@ const STD_TEMP_K: f32 = 288.15;
 const EARTH_RADIUS: f32 = 6_371_000.0;
 
 // Sensor Noise (Continuous)
-const ACCEL_NOISE_DENSITY: f32 = 0.002;
-const GYRO_NOISE_DENSITY: f32 = 0.0001;
+// These are *process* noise parameters, not sensor specs — they must account
+// for unmodeled dynamics (aero perturbations, thrust misalignment, wind gusts)
+// in addition to sensor noise.
+const ACCEL_NOISE_DENSITY: f32 = 0.5; // m/s²/√Hz  (aerodynamic + sensor uncertainty)
+const GYRO_NOISE_DENSITY: f32 = 0.005; // rad/s/√Hz  (orientation model uncertainty)
 const ACCEL_BIAS_INSTABILITY: f32 = 1e-4;
 const GYRO_BIAS_INSTABILITY: f32 = 1e-5;
+
+// Position random-walk process noise — accounts for velocity uncertainty
+// propagating into position over each prediction step.
+const POS_PROCESS_NOISE: f32 = 0.1; // m/√s
 
 // Measurement Noise (Discrete Variance)
 const R_GPS_POS: f32 = 9.0;
@@ -197,8 +204,10 @@ impl RocketEsKf {
         let mut q = ErrorCovariance::zeros();
         let and2 = ACCEL_NOISE_DENSITY * ACCEL_NOISE_DENSITY;
         let gnd2 = GYRO_NOISE_DENSITY * GYRO_NOISE_DENSITY;
-        q.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(and2 * dt * dt);
-        q.fixed_view_mut::<3, 3>(6, 6).fill_diagonal(gnd2 * dt * dt);
+        let pnq = POS_PROCESS_NOISE * POS_PROCESS_NOISE;
+        q.fixed_view_mut::<3, 3>(0, 0).fill_diagonal(pnq * dt); // position
+        q.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(and2 * dt); // velocity
+        q.fixed_view_mut::<3, 3>(6, 6).fill_diagonal(gnd2 * dt); // attitude
         q.fixed_view_mut::<3, 3>(9, 9)
             .fill_diagonal(ACCEL_BIAS_INSTABILITY * dt);
         q.fixed_view_mut::<3, 3>(12, 12)
