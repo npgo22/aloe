@@ -287,13 +287,13 @@ def run_cli(argv: list[str] | None = None) -> None:
 
             # ESKF vs Truth — 3D position RMSE & max
             eskf_pos_err = np.sqrt((ekf_n - truth_n) ** 2 + (ekf_e - truth_e) ** 2 + (ekf_d - truth_d) ** 2)
-            row["eskf_pos3d_rmse_m"] = float(np.sqrt(np.mean(eskf_pos_err ** 2)))
+            row["eskf_pos3d_rmse_m"] = float(np.sqrt(np.mean(eskf_pos_err**2)))
             row["eskf_pos3d_max_m"] = float(np.max(eskf_pos_err))
             row["eskf_pos3d_p95_m"] = float(np.percentile(eskf_pos_err, 95))
 
             # ESKF vs Truth — 3D velocity RMSE
             eskf_vel_err = np.sqrt((ekf_vn - truth_vn) ** 2 + (ekf_ve - truth_ve) ** 2 + (ekf_vd - truth_vd) ** 2)
-            row["eskf_vel3d_rmse_ms"] = float(np.sqrt(np.mean(eskf_vel_err ** 2)))
+            row["eskf_vel3d_rmse_ms"] = float(np.sqrt(np.mean(eskf_vel_err**2)))
             row["eskf_vel3d_max_ms"] = float(np.max(eskf_vel_err))
             row["eskf_vel3d_p95_ms"] = float(np.percentile(eskf_vel_err, 95))
 
@@ -307,23 +307,23 @@ def run_cli(argv: list[str] | None = None) -> None:
 
             # Quantized vs Truth — 3D position RMSE & max
             qt_pos_err = np.sqrt((qpn - truth_n) ** 2 + (qpe - truth_e) ** 2 + (q_d - truth_d) ** 2)
-            row["quant_pos3d_rmse_m"] = float(np.sqrt(np.mean(qt_pos_err ** 2)))
+            row["quant_pos3d_rmse_m"] = float(np.sqrt(np.mean(qt_pos_err**2)))
             row["quant_pos3d_max_m"] = float(np.max(qt_pos_err))
             row["quant_pos3d_p95_m"] = float(np.percentile(qt_pos_err, 95))
 
             # Quantized vs Truth — 3D velocity RMSE
             qt_vel_err = np.sqrt((qvn - truth_vn) ** 2 + (qve - truth_ve) ** 2 + (qvd - truth_vd) ** 2)
-            row["quant_vel3d_rmse_ms"] = float(np.sqrt(np.mean(qt_vel_err ** 2)))
+            row["quant_vel3d_rmse_ms"] = float(np.sqrt(np.mean(qt_vel_err**2)))
             row["quant_vel3d_max_ms"] = float(np.max(qt_vel_err))
             row["quant_vel3d_p95_ms"] = float(np.percentile(qt_vel_err, 95))
 
             # Quantization-only error (quant round-trip vs ESKF)
             rt_pos_err = np.sqrt((qpn - ekf_n) ** 2 + (qpe - ekf_e) ** 2 + (q_d - ekf_d) ** 2)
-            row["quant_rt_pos3d_rmse_m"] = float(np.sqrt(np.mean(rt_pos_err ** 2)))
+            row["quant_rt_pos3d_rmse_m"] = float(np.sqrt(np.mean(rt_pos_err**2)))
             row["quant_rt_pos3d_max_m"] = float(np.max(rt_pos_err))
 
             rt_vel_err = np.sqrt((qvn - ekf_vn) ** 2 + (qve - ekf_ve) ** 2 + (qvd - ekf_vd) ** 2)
-            row["quant_rt_vel3d_rmse_ms"] = float(np.sqrt(np.mean(rt_vel_err ** 2)))
+            row["quant_rt_vel3d_rmse_ms"] = float(np.sqrt(np.mean(rt_vel_err**2)))
             row["quant_rt_vel3d_max_ms"] = float(np.max(rt_vel_err))
 
         summary_rows.append(row)
