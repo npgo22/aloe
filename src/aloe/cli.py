@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 
 from aloe.sim import RocketParams, SensorConfig, simulate_rocket, add_sensor_data
 from aloe.params import get_param_ranges
@@ -128,12 +129,15 @@ def _build_parser() -> argparse.ArgumentParser:
 def _write(df, path: Path, fmt: str) -> None:
     """Write a DataFrame to disk in the requested format."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Avoid Path.with_suffix() – sweep tags may contain dots (e.g. "thrust=2.5e+04")
+    # which would cause with_suffix to truncate the filename.
+    out = path.parent / f"{path.name}.{fmt}"
     if fmt == "parquet":
-        df.write_parquet(path.with_suffix(".parquet"))
+        df.write_parquet(out)
     elif fmt == "csv":
-        df.write_csv(path.with_suffix(".csv"))
+        df.write_csv(out)
     elif fmt == "xlsx":
-        df.write_excel(path.with_suffix(".xlsx"), worksheet="Flight Data")
+        df.write_excel(out, worksheet="Flight Data")
 
 
 # ── Sweep range definitions (matching GUI sliders) ───────────────────
@@ -198,7 +202,7 @@ def run_cli(argv: list[str] | None = None) -> None:
 
         out_path = args.output_dir / "sim_single"
         _write(df, out_path, args.format)
-        print(f"✓ Wrote {out_path.with_suffix('.' + args.format)}  ({len(df)} rows)")
+        print(f"✓ Wrote {out_path.parent / (out_path.name + '.' + args.format)}  ({len(df)} rows)")
         return
 
     # ── Sweep mode ───────────────────────────────────────────────
@@ -220,6 +224,8 @@ def run_cli(argv: list[str] | None = None) -> None:
     combos = list(itertools.product(*axes))
     total = len(combos)
     print(f"Sweeping {len(sweep_names)} params × {steps} steps = {total} simulations")
+
+    summary_rows: list[dict[str, float]] = []
 
     for idx, values in enumerate(combos, 1):
         params = RocketParams()
@@ -255,6 +261,102 @@ def run_cli(argv: list[str] | None = None) -> None:
 
         out_path = args.output_dir / f"sim_{tag}"
         _write(df, out_path, args.format)
+
+        # Collect per-run statistics
+        row: dict[str, float] = {name: val for name, val in zip(sweep_names, values)}
+        row["apogee_m"] = float(df["altitude_m"].max())  # type: ignore[arg-type]
+        row["max_velocity_ms"] = float(df["velocity_total_ms"].max())  # type: ignore[arg-type]
+        row["max_accel_ms2"] = float(df["acceleration_total_ms2"].max())  # type: ignore[arg-type]
+        row["flight_time_s"] = float(df["time_s"].max())  # type: ignore[arg-type]
+
+        # ── Filter comparison metrics ────────────────────────────
+        if "eskf_pos_n" in df.columns:
+            truth_n = df["position_x_m"].to_numpy().astype(np.float32)
+            truth_e = df["position_z_m"].to_numpy().astype(np.float32)
+            truth_d = -df["altitude_m"].to_numpy().astype(np.float32)
+            truth_vn = df["velocity_x_ms"].to_numpy().astype(np.float32)
+            truth_ve = df["velocity_z_ms"].to_numpy().astype(np.float32)
+            truth_vd = -df["velocity_y_ms"].to_numpy().astype(np.float32)
+
+            ekf_n = df["eskf_pos_n"].to_numpy().astype(np.float32)
+            ekf_e = df["eskf_pos_e"].to_numpy().astype(np.float32)
+            ekf_d = df["eskf_pos_d"].to_numpy().astype(np.float32)
+            ekf_vn = df["eskf_vel_n"].to_numpy().astype(np.float32)
+            ekf_ve = df["eskf_vel_e"].to_numpy().astype(np.float32)
+            ekf_vd = df["eskf_vel_d"].to_numpy().astype(np.float32)
+
+            # ESKF vs Truth — 3D position RMSE & max
+            eskf_pos_err = np.sqrt((ekf_n - truth_n) ** 2 + (ekf_e - truth_e) ** 2 + (ekf_d - truth_d) ** 2)
+            row["eskf_pos3d_rmse_m"] = float(np.sqrt(np.mean(eskf_pos_err ** 2)))
+            row["eskf_pos3d_max_m"] = float(np.max(eskf_pos_err))
+            row["eskf_pos3d_p95_m"] = float(np.percentile(eskf_pos_err, 95))
+
+            # ESKF vs Truth — 3D velocity RMSE
+            eskf_vel_err = np.sqrt((ekf_vn - truth_vn) ** 2 + (ekf_ve - truth_ve) ** 2 + (ekf_vd - truth_vd) ** 2)
+            row["eskf_vel3d_rmse_ms"] = float(np.sqrt(np.mean(eskf_vel_err ** 2)))
+            row["eskf_vel3d_max_ms"] = float(np.max(eskf_vel_err))
+            row["eskf_vel3d_p95_ms"] = float(np.percentile(eskf_vel_err, 95))
+
+        if "q_flight_pos_n_m" in df.columns:
+            qpn = df["q_flight_pos_n_m"].to_numpy().astype(np.float32)
+            qpe = df["q_flight_pos_e_m"].to_numpy().astype(np.float32)
+            q_d = -df["q_flight_alt_m"].to_numpy().astype(np.float32)
+            qvn = df["q_flight_vel_n_ms"].to_numpy().astype(np.float32)
+            qve = df["q_flight_vel_e_ms"].to_numpy().astype(np.float32)
+            qvd = df["q_flight_vel_d_ms"].to_numpy().astype(np.float32)
+
+            # Quantized vs Truth — 3D position RMSE & max
+            qt_pos_err = np.sqrt((qpn - truth_n) ** 2 + (qpe - truth_e) ** 2 + (q_d - truth_d) ** 2)
+            row["quant_pos3d_rmse_m"] = float(np.sqrt(np.mean(qt_pos_err ** 2)))
+            row["quant_pos3d_max_m"] = float(np.max(qt_pos_err))
+            row["quant_pos3d_p95_m"] = float(np.percentile(qt_pos_err, 95))
+
+            # Quantized vs Truth — 3D velocity RMSE
+            qt_vel_err = np.sqrt((qvn - truth_vn) ** 2 + (qve - truth_ve) ** 2 + (qvd - truth_vd) ** 2)
+            row["quant_vel3d_rmse_ms"] = float(np.sqrt(np.mean(qt_vel_err ** 2)))
+            row["quant_vel3d_max_ms"] = float(np.max(qt_vel_err))
+            row["quant_vel3d_p95_ms"] = float(np.percentile(qt_vel_err, 95))
+
+            # Quantization-only error (quant round-trip vs ESKF)
+            rt_pos_err = np.sqrt((qpn - ekf_n) ** 2 + (qpe - ekf_e) ** 2 + (q_d - ekf_d) ** 2)
+            row["quant_rt_pos3d_rmse_m"] = float(np.sqrt(np.mean(rt_pos_err ** 2)))
+            row["quant_rt_pos3d_max_m"] = float(np.max(rt_pos_err))
+
+            rt_vel_err = np.sqrt((qvn - ekf_vn) ** 2 + (qve - ekf_ve) ** 2 + (qvd - ekf_vd) ** 2)
+            row["quant_rt_vel3d_rmse_ms"] = float(np.sqrt(np.mean(rt_vel_err ** 2)))
+            row["quant_rt_vel3d_max_ms"] = float(np.max(rt_vel_err))
+
+        summary_rows.append(row)
+
         print(f"  [{idx}/{total}] {tag}  ({len(df)} rows)")
+
+    # ── Write sweep summary CSV ──────────────────────────────────
+    summary_df = pl.DataFrame(summary_rows)
+    csv_path = args.output_dir / "sweep_summary.csv"
+    summary_df.write_csv(csv_path)
+    print(f"\n✓ Sweep summary written to {csv_path}")
+
+    # ── Print aggregate statistics ───────────────────────────────
+    # Group stats by category for readability
+    flight_cols = ["apogee_m", "max_velocity_ms", "max_accel_ms2", "flight_time_s"]
+    eskf_cols = [c for c in summary_df.columns if c.startswith("eskf_")]
+    quant_vs_truth_cols = [c for c in summary_df.columns if c.startswith("quant_") and "_rt_" not in c]
+    quant_rt_cols = [c for c in summary_df.columns if "_rt_" in c]
+
+    def _print_group(title: str, cols: list[str]) -> None:
+        if not cols:
+            return
+        print(f"\n  {title}")
+        print(f"  {'metric':<30s} {'min':>12s} {'max':>12s} {'mean':>12s} {'std':>12s}")
+        print(f"  {'─' * 30} {'─' * 12} {'─' * 12} {'─' * 12} {'─' * 12}")
+        for col in cols:
+            s = summary_df[col]
+            print(f"  {col:<30s} {s.min():>12.3f} {s.max():>12.3f} {s.mean():>12.3f} {s.std():>12.3f}")
+
+    print("\n── Sweep Statistics ──")
+    _print_group("Flight Parameters", flight_cols)
+    _print_group("ESKF vs Truth", eskf_cols)
+    _print_group("Quantized vs Truth", quant_vs_truth_cols)
+    _print_group("Quantization Round-Trip (ESKF→Quant→Dequant)", quant_rt_cols)
 
     print(f"\n✓ All {total} simulations written to {args.output_dir}/")
