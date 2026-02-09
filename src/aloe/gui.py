@@ -74,7 +74,7 @@ def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
 
 def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
     """Create 2D subplot figure (altitude, velocity, accel, forces, mass).
-    
+
     Note: Each trace includes its own x (time_s) array in the JSON payload.
     Plotly.js doesn't support shared data arrays across traces, so we can't
     deduplicate time_s in the JSON. However, with LTTB downsampling to ~2000
