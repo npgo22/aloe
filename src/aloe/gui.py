@@ -1,7 +1,7 @@
 import io
 from dataclasses import fields
 from typing import Any, Union
-from nicegui import ui
+from nicegui import run, ui
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import polars as pl
@@ -783,7 +783,8 @@ def index_page():
     play_button = None
     filter_state: dict[str, Any] = {"enabled": False}
 
-    def _run_sim():
+    def _run_sim_sync():
+        """Synchronous sim + filter — called inside a thread."""
         df = simulate_rocket(params)
         df = add_sensor_data(df, sensor_cfg)
         if filter_state["enabled"] and _CAN_FILTER:
@@ -791,29 +792,47 @@ def index_page():
         full_df["df"] = df
         return df
 
-    def _render(df=None):
+    async def _run_sim():
+        """Run the simulation off the event loop to avoid WebSocket timeouts."""
+        return await run.io_bound(_run_sim_sync)
+
+    async def _render(df=None):
         if df is None:
-            df = full_df["df"] if full_df["df"] is not None else _run_sim()
+            df = full_df["df"] if full_df["df"] is not None else await _run_sim()
         t_max = None
         if animate_checkbox is not None and animate_checkbox.value and time_slider is not None:
             t_max = time_slider.value
+
+        # Build figures in a thread so the event loop stays responsive
+        def _build_figures():
+            figs: dict[str, Any] = {}
+            figs["3d"] = create_3d_figure(df, sensor_cfg=sensor_cfg, max_time=t_max)
+            figs["2d"] = create_2d_figures(df, max_time=t_max, launch_delay=params.launch_delay)
+            figs["sensor"] = create_sensor_figures(df, sensor_cfg, max_time=t_max)
+            if filter_state["enabled"] and _CAN_FILTER and "eskf_pos_n" in df.columns:
+                f3, f2 = create_filter_figures(df, max_time=t_max)
+                figs["filter_3d"] = f3
+                figs["filter_2d"] = f2
+                figs["filter_err"] = compute_error_report(df)
+            return figs
+
+        figs = await run.io_bound(_build_figures)
+
         if plot_3d is not None:
-            plot_3d.update_figure(create_3d_figure(df, sensor_cfg=sensor_cfg, max_time=t_max))
+            plot_3d.update_figure(figs["3d"])
         if plot_2d is not None:
-            plot_2d.update_figure(create_2d_figures(df, max_time=t_max, launch_delay=params.launch_delay))
+            plot_2d.update_figure(figs["2d"])
         if plot_sensor is not None:
-            plot_sensor.update_figure(create_sensor_figures(df, sensor_cfg, max_time=t_max))
-        if filter_state["enabled"] and _CAN_FILTER and "eskf_pos_n" in df.columns:
-            f3, f2 = create_filter_figures(df, max_time=t_max)
+            plot_sensor.update_figure(figs["sensor"])
+        if "filter_3d" in figs:
             if plot_filter_3d is not None:
-                plot_filter_3d.update_figure(f3)
+                plot_filter_3d.update_figure(figs["filter_3d"])
             if plot_filter_2d is not None:
-                plot_filter_2d.update_figure(f2)
+                plot_filter_2d.update_figure(figs["filter_2d"])
             if filter_stats_container is not None:
                 filter_stats_container.clear()
-                err_df = compute_error_report(df)
                 with filter_stats_container:
-                    _render_error_table(err_df)
+                    _render_error_table(figs["filter_err"])
 
     def _render_error_table(err_df):
         """Render error statistics as a NiceGUI table."""
@@ -836,10 +855,10 @@ def index_page():
         if debounce_timer["t"] is not None:
             debounce_timer["t"].cancel()
 
-        def go():
+        async def go():
             debounce_timer["t"] = None
-            _run_sim()
-            _render()
+            await _run_sim()
+            await _render()
             if time_slider is not None and full_df["df"] is not None:
                 try:
                     max_time = full_df["df"]["time_s"].max()
@@ -856,19 +875,21 @@ def index_page():
         if debounce_timer["t"] is not None:
             debounce_timer["t"].cancel()
 
-        def go():
+        async def go():
             debounce_timer["t"] = None
             # Keep the existing base simulation, just regenerate sensor overlay
             if full_df["df"] is not None:
-                base_df = full_df["df"].select(
-                    [
-                        c
-                        for c in full_df["df"].columns
-                        if not c.startswith(("bmi088_", "adxl375_", "ms5611_", "lis3mdl_", "gps_"))
-                    ]
-                )
-                full_df["df"] = add_sensor_data(base_df, sensor_cfg)
-            _render()
+                def _regen_sensors():
+                    base_df = full_df["df"].select(
+                        [
+                            c
+                            for c in full_df["df"].columns
+                            if not c.startswith(("bmi088_", "adxl375_", "ms5611_", "lis3mdl_", "gps_"))
+                        ]
+                    )
+                    return add_sensor_data(base_df, sensor_cfg)
+                full_df["df"] = await run.io_bound(_regen_sensors)
+            await _render()
 
         debounce_timer["t"] = ui.timer(0.05, go, once=True)
 
@@ -965,10 +986,14 @@ def index_page():
         _debounced_update()
 
     def on_time_change(e):
-        _render()
+        async def _do():
+            await _render()
+        ui.timer(0.0, _do, once=True)
 
     def on_animate_toggle(e):
-        _render()
+        async def _do():
+            await _render()
+        ui.timer(0.0, _do, once=True)
 
     def on_play():
         if timer_ref["timer"] is not None:
@@ -996,21 +1021,27 @@ def index_page():
                 play_button.set_text("▶ Play")
                 return
             time_slider.value = round(time_slider.value + step, 2)
-            _render()
+            await _render()
 
         timer_ref["timer"] = ui.timer(0.1, tick)
 
-    def export_xlsx():
-        df = full_df["df"] if full_df["df"] is not None else _run_sim()
-        buf = io.BytesIO()
-        df.write_excel(buf, worksheet="Flight Data")
-        ui.download(buf.getvalue(), "rocket_simulation.xlsx")
+    async def export_xlsx():
+        df = full_df["df"] if full_df["df"] is not None else await _run_sim()
+        def _write():
+            buf = io.BytesIO()
+            df.write_excel(buf, worksheet="Flight Data")
+            return buf.getvalue()
+        data = await run.io_bound(_write)
+        ui.download(data, "rocket_simulation.xlsx")
 
-    def export_csv():
-        df = full_df["df"] if full_df["df"] is not None else _run_sim()
-        buf = io.BytesIO()
-        df.write_csv(buf)
-        ui.download(buf.getvalue(), "rocket_simulation.csv")
+    async def export_csv():
+        df = full_df["df"] if full_df["df"] is not None else await _run_sim()
+        def _write():
+            buf = io.BytesIO()
+            df.write_csv(buf)
+            return buf.getvalue()
+        data = await run.io_bound(_write)
+        ui.download(data, "rocket_simulation.csv")
 
     # ── Build UI ──────────────────────────────────────────────────────
     ui.page_title("Aloe")
@@ -1204,7 +1235,7 @@ def index_page():
                 .style("box-shadow: 0 2px 8px rgba(0,0,0,0.3)")
             )
 
-            df = _run_sim()
+            df = _run_sim_sync()
             plot_3d = ui.plotly(create_3d_figure(df, sensor_cfg=sensor_cfg)).classes("w-full")
             plot_2d = ui.plotly(create_2d_figures(df, launch_delay=params.launch_delay)).classes("w-full")
             plot_sensor = ui.plotly(create_sensor_figures(df, sensor_cfg)).classes("w-full")
