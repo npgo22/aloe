@@ -61,8 +61,12 @@ jobs:
             args: --single --no-sensors
             check: sim_single.parquet
 
-          - name: single-filter
-            args: --single --filter
+          - name: single-default-with-filter
+            args: --single
+            check: sim_single.parquet
+
+          - name: single-no-filter
+            args: --single --no-filter
             check: sim_single.parquet
 
           - name: single-filter-report
@@ -97,13 +101,13 @@ jobs:
 
           - name: single-filter-geo
             args: >-
-              --single --filter
+              --single
               --mag-declination 10.5 --home-lat 40.0 --home-lon -105.0 --home-alt 1600
             check: sim_single.parquet
 
           # ── Sweep variants ──────────────────────────────────────
-          - name: sweep-no-sensors-no-filter
-            args: --no-sensors --sweep-steps 2 --sweep-params dry_mass thrust
+          - name: sweep-no-filter
+            args: --no-filter --sweep-steps 2 --sweep-params dry_mass thrust
             check: sweep_summary.csv
 
           - name: sweep-custom-params
@@ -115,13 +119,13 @@ jobs:
             check: sweep_summary.csv
             format: csv
 
-          - name: sweep-filter-small
-            args: --filter --sweep-steps 2 --sweep-params thrust
+          - name: sweep-with-filter-small
+            args: --sweep-steps 2 --sweep-params thrust
             check: sweep_summary.csv
 
           # ── Full sweep (all features) — artifact uploaded ───────
           - name: full-sweep
-            args: --filter --filter-report
+            args: --filter-report
             check: sweep_summary.csv
             upload: true
 

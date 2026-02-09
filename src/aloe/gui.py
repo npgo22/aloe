@@ -25,7 +25,9 @@ SENSOR_LATENCY_SLIDERS = get_sensor_latency_sliders()
 
 
 def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
-    """Create standalone 3D flight path figure with optional sensor overlays."""
+    """Create 3D flight path with truth, ESKF, and quantized overlays."""
+    import math as _math
+
     if max_time is not None:
         df = df.filter(pl.col("time_s") <= max_time)
 
@@ -36,37 +38,102 @@ def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
             y=df["position_z_m"].to_list(),
             z=df["altitude_m"].to_list(),
             mode="lines",
-            name="Flight Path",
+            name="Truth",
             line=dict(color="blue", width=4),
         )
     ]
 
-    # Overlay 3-axis sensor data as scatter points
-    if sensor_cfg is not None:
-        # GPS position (same coordinate space as flight path)
-        if sensor_cfg.enabled.get("lc29h") and "gps_pos_x_m" in df.columns:
-            mask = df["gps_pos_x_m"].is_not_null()
-            gps_df = df.filter(mask)
-            traces.append(
-                go.Scatter3d(
-                    x=gps_df["gps_pos_x_m"].to_list(),
-                    y=gps_df["gps_pos_z_m"].to_list(),
-                    z=gps_df["gps_pos_y_m"].to_list(),
-                    mode="markers",
-                    name="GPS (LC29H)",
-                    marker=dict(color="red", size=3, symbol="circle", opacity=0.7),
-                )
+    # ESKF estimates (if available)
+    if "eskf_pos_n" in df.columns:
+        traces.append(
+            go.Scatter3d(
+                x=df["eskf_pos_n"].to_list(),
+                y=df["eskf_pos_e"].to_list(),
+                z=(-df["eskf_pos_d"]).to_list(),
+                mode="lines",
+                name="ESKF",
+                line=dict(color="red", width=3, dash="dash"),
             )
+        )
+
+    # Quantized telemetry (if available)
+    if "q_flight_pos_n_m" in df.columns:
+        traces.append(
+            go.Scatter3d(
+                x=df["q_flight_pos_n_m"].to_list(),
+                y=df["q_flight_pos_e_m"].to_list(),
+                z=df["q_flight_alt_m"].to_list(),
+                mode="lines",
+                name="Quantized",
+                line=dict(color="green", width=2, dash="dot"),
+            )
+        )
+
+    # State transition markers (truth)
+    _state_marker_cfg = [
+        ("truth_ignition_time", "Ignition (truth)", "orange", "diamond"),
+        ("truth_burn_time", "Burn (truth)", "red", "diamond"),
+        ("truth_coasting_time", "Coasting (truth)", "cyan", "diamond"),
+        ("truth_apogee_time", "Apogee (truth)", "green", "diamond"),
+        ("truth_recovery_time", "Recovery (truth)", "purple", "diamond"),
+    ]
+    for col, label, color, symbol in _state_marker_cfg:
+        if col in df.columns:
+            t_val = float(df[col][0])
+            if not _math.isnan(t_val):
+                idx = (df["time_s"] - t_val).abs().arg_min()
+                if idx is not None:
+                    traces.append(
+                        go.Scatter3d(
+                            x=[df["position_x_m"][idx]],
+                            y=[df["position_z_m"][idx]],
+                            z=[df["altitude_m"][idx]],
+                            mode="markers+text",
+                            name=label,
+                            marker=dict(size=7, color=color, symbol=symbol),
+                            text=[label.split(" (")[0]],
+                            textposition="top center",
+                            showlegend=True,
+                            hovertemplate=f"{label}<br>t={t_val:.3f}s<extra></extra>",
+                        )
+                    )
+
+    # State transition markers (ESKF)
+    _eskf_marker_cfg = [
+        ("eskf_ignition_time", "Ignition (ESKF)", "darkorange", "square"),
+        ("eskf_burn_time", "Burn (ESKF)", "darkred", "square"),
+        ("eskf_coasting_time", "Coasting (ESKF)", "darkcyan", "square"),
+        ("eskf_apogee_time", "Apogee (ESKF)", "darkgreen", "square"),
+        ("eskf_recovery_time", "Recovery (ESKF)", "indigo", "square"),
+    ]
+    for col, label, color, symbol in _eskf_marker_cfg:
+        if col in df.columns and "eskf_pos_n" in df.columns:
+            t_val = float(df[col][0])
+            if not _math.isnan(t_val):
+                idx = (df["time_s"] - t_val).abs().arg_min()
+                if idx is not None:
+                    traces.append(
+                        go.Scatter3d(
+                            x=[df["eskf_pos_n"][idx]],
+                            y=[df["eskf_pos_e"][idx]],
+                            z=[float(-df["eskf_pos_d"][idx])],
+                            mode="markers",
+                            name=label,
+                            marker=dict(size=7, color=color, symbol=symbol),
+                            showlegend=True,
+                            hovertemplate=f"{label}<br>t={t_val:.3f}s<extra></extra>",
+                        )
+                    )
 
     fig = go.Figure(data=traces)
     fig.update_layout(
         scene=dict(
-            xaxis_title="Downrange X (m)",
-            yaxis_title="Crosswind Z (m)",
+            xaxis_title="North / X (m)",
+            yaxis_title="East / Z (m)",
             zaxis_title="Altitude (m)",
         ),
         height=700,
-        title_text=f"3D Flight Path (Max Alt: {max_alt:.1f} m)",
+        title_text=f"Flight Path: Truth vs ESKF vs Quantized (Max Alt: {max_alt:.1f} m)",
         margin=dict(l=0, r=0, t=40, b=0),
     )
     return fig
@@ -542,57 +609,10 @@ def create_sensor_figures(df, sensor_cfg: SensorConfig, max_time=None):
     return fig
 
 
-def create_filter_figures(df, max_time=None, launch_delay: float = 1.0):
-    """Create filter output plots: 3D path comparison + position/velocity error over time."""
+def create_filter_error_figure(df, max_time=None, launch_delay: float = 1.0):
+    """Create 2D position/velocity error plots."""
     if max_time is not None:
         df = df.filter(pl.col("time_s") <= max_time)
-
-    # ---------- 3D path comparison: truth vs ESKF vs quantized ----------
-    traces_3d = [
-        go.Scatter3d(
-            x=df["position_x_m"].to_list(),
-            y=df["position_z_m"].to_list(),
-            z=df["altitude_m"].to_list(),
-            mode="lines",
-            name="Truth",
-            line=dict(color="blue", width=4),
-        ),
-    ]
-    if "eskf_pos_n" in df.columns:
-        traces_3d.append(
-            go.Scatter3d(
-                x=df["eskf_pos_n"].to_list(),
-                y=df["eskf_pos_e"].to_list(),
-                z=(-df["eskf_pos_d"]).to_list(),
-                mode="lines",
-                name="ESKF",
-                line=dict(color="red", width=3, dash="dash"),
-            )
-        )
-    if "q_flight_pos_n_m" in df.columns:
-        traces_3d.append(
-            go.Scatter3d(
-                x=df["q_flight_pos_n_m"].to_list(),
-                y=df["q_flight_pos_e_m"].to_list(),
-                z=df["q_flight_alt_m"].to_list(),
-                mode="lines",
-                name="Quantized",
-                line=dict(color="green", width=2, dash="dot"),
-            )
-        )
-
-    fig_3d = go.Figure(data=traces_3d)
-    max_alt = df["altitude_m"].max()
-    fig_3d.update_layout(
-        scene=dict(
-            xaxis_title="North / X (m)",
-            yaxis_title="East / Z (m)",
-            zaxis_title="Altitude (m)",
-        ),
-        height=650,
-        title_text=f"Flight Path: Truth vs ESKF vs Quantized (Max Alt: {max_alt:.1f} m)",
-        margin=dict(l=0, r=0, t=40, b=0),
-    )
 
     # ---------- 2D error time-series ----------
 
@@ -811,7 +831,7 @@ def create_filter_figures(df, max_time=None, launch_delay: float = 1.0):
         margin=dict(t=60, b=40),
     )
 
-    return fig_3d, fig_2d
+    return fig_2d
 
 
 # Figure cache for diffing (avoids sending identical JSON)
@@ -848,19 +868,18 @@ def index_page():
     plot_3d = None
     plot_2d = None
     plot_sensor = None
-    plot_filter_3d = None
-    plot_filter_2d = None
+    plot_filter_error = None
     filter_stats_container = None
     time_slider = None
     animate_checkbox = None
     play_button = None
-    filter_state: dict[str, Any] = {"enabled": False}
 
     def _run_sim_sync():
-        """Synchronous sim + filter — called inside a thread."""
+        """Synchronous sim + sensor + filter — called inside a thread."""
         df = simulate_rocket(params)
         df = add_sensor_data(df, sensor_cfg)
-        if filter_state["enabled"] and _CAN_FILTER:
+        # Always run filter if available
+        if _CAN_FILTER:
             df = run_filter_pipeline(df)
         full_df["df"] = df
         return df
@@ -882,11 +901,10 @@ def index_page():
             figs["3d"] = create_3d_figure(df, sensor_cfg=sensor_cfg, max_time=t_max)
             figs["2d"] = create_2d_figures(df, max_time=t_max, launch_delay=params.launch_delay)
             figs["sensor"] = create_sensor_figures(df, sensor_cfg, max_time=t_max)
-            if filter_state["enabled"] and _CAN_FILTER and "eskf_pos_n" in df.columns:
-                f3, f2 = create_filter_figures(df, max_time=t_max, launch_delay=params.launch_delay)
-                figs["filter_3d"] = f3
-                figs["filter_2d"] = f2
-                figs["filter_err"] = compute_error_report(df)
+            # Always include filter data if available
+            if _CAN_FILTER and "eskf_pos_n" in df.columns:
+                figs["filter_error"] = create_filter_error_figure(df, max_time=t_max, launch_delay=params.launch_delay)
+                figs["filter_stats"] = compute_error_report(df)
             return figs
 
         figs = await run.io_bound(_build_figures)
@@ -898,15 +916,13 @@ def index_page():
             _update_if_changed(plot_2d, figs["2d"], "2d")
         if plot_sensor is not None:
             _update_if_changed(plot_sensor, figs["sensor"], "sensor")
-        if "filter_3d" in figs:
-            if plot_filter_3d is not None:
-                _update_if_changed(plot_filter_3d, figs["filter_3d"], "filter_3d")
-            if plot_filter_2d is not None:
-                _update_if_changed(plot_filter_2d, figs["filter_2d"], "filter_2d")
+        if "filter_error" in figs:
+            if plot_filter_error is not None:
+                _update_if_changed(plot_filter_error, figs["filter_error"], "filter_error")
             if filter_stats_container is not None:
                 filter_stats_container.clear()
                 with filter_stats_container:
-                    _render_error_table(figs["filter_err"])
+                    _render_error_table(figs["filter_stats"])
 
     def _render_error_table(err_df):
         """Render error statistics as a NiceGUI table."""
@@ -945,7 +961,7 @@ def index_page():
         debounce_timer["t"] = ui.timer(0.15, go, once=True)
 
     def _debounced_sensor_update():
-        """Re-generate sensor data only (faster than full sim re-run)."""
+        """Re-generate sensor data + re-run filter (faster than full sim re-run)."""
         if debounce_timer["t"] is not None:
             debounce_timer["t"].cancel()
 
@@ -955,14 +971,44 @@ def index_page():
             if full_df["df"] is not None:
 
                 def _regen_sensors():
+                    # Strip sensor, filter, and state columns — keep only raw sim data
                     base_df = full_df["df"].select(
                         [
                             c
                             for c in full_df["df"].columns
-                            if not c.startswith(("bmi088_", "adxl375_", "ms5611_", "lis3mdl_", "gps_"))
+                            if not c.startswith(
+                                (
+                                    "bmi088_",
+                                    "adxl375_",
+                                    "ms5611_",
+                                    "lis3mdl_",
+                                    "gps_",
+                                    "eskf_",
+                                    "q_flight_",
+                                    "q_recovery_",
+                                    "truth_state",
+                                    "eskf_state",
+                                    "truth_pad_",
+                                    "truth_ignition_",
+                                    "truth_burn_",
+                                    "truth_coasting_",
+                                    "truth_apogee_",
+                                    "truth_recovery_",
+                                    "eskf_pad_",
+                                    "eskf_ignition_",
+                                    "eskf_burn_",
+                                    "eskf_coasting_",
+                                    "eskf_apogee_",
+                                    "eskf_recovery_",
+                                )
+                            )
                         ]
                     )
-                    return add_sensor_data(base_df, sensor_cfg)
+                    df = add_sensor_data(base_df, sensor_cfg)
+                    # Re-run filter so ESKF/state columns reflect new sensor config
+                    if _CAN_FILTER:
+                        df = run_filter_pipeline(df)
+                    return df
 
                 full_df["df"] = await run.io_bound(_regen_sensors)
             await _render()
@@ -1174,7 +1220,6 @@ def index_page():
                 rocket_tab = ui.tab("Rocket")
                 env_tab = ui.tab("Env")
                 sensors_tab = ui.tab("Sensors")
-                filter_tab = ui.tab("Filter")
                 playback_tab = ui.tab("Playback")
 
             with ui.tab_panels(tabs, value=rocket_tab).classes("w-full"):
@@ -1278,29 +1323,6 @@ def index_page():
                         )
                     ui.label("Note: Noise is independent per axis").classes("text-xs text-gray-500 mt-2 italic")
 
-                with ui.tab_panel(filter_tab):
-                    ui.label("ES-EKF Sensor Fusion").classes("text-sm font-bold mb-2")
-                    if _CAN_FILTER:
-
-                        def _toggle_filter(e):
-                            filter_state["enabled"] = e.value
-                            _debounced_update()
-
-                        ui.checkbox(
-                            "Enable Kalman Filter",
-                            value=False,
-                            on_change=_toggle_filter,
-                        ).classes("text-sm")
-                        ui.label(
-                            "Runs an Error-State EKF on sensor data to produce "
-                            "fused position/velocity estimates, then quantizes to "
-                            "the on-wire telemetry format."
-                        ).classes("text-xs text-gray-500 mt-2")
-                    else:
-                        ui.label("⚠ Native extension not available. " "Build with: maturin develop --release").classes(
-                            "text-xs text-red-500"
-                        )
-
                 with ui.tab_panel(playback_tab):
                     ui.label("Playback Controls").classes("text-sm font-bold mb-2")
                     animate_checkbox = ui.checkbox("Animate over time", value=False, on_change=on_animate_toggle)
@@ -1332,22 +1354,30 @@ def index_page():
             plot_2d = ui.plotly(create_2d_figures(df, launch_delay=params.launch_delay)).classes("w-full")
             plot_sensor = ui.plotly(create_sensor_figures(df, sensor_cfg)).classes("w-full")
 
-            # Filter plots (initially empty, populated when filter is enabled)
-            with ui.expansion("Kalman Filter Output", icon="filter_alt").classes("w-full").props("default-closed"):
-                if _CAN_FILTER and "eskf_pos_n" in df.columns:
-                    f3d, f2d = create_filter_figures(df, launch_delay=params.launch_delay)
-                    plot_filter_3d = ui.plotly(f3d).classes("w-full")
-                    plot_filter_2d = ui.plotly(f2d).classes("w-full")
-                    filter_stats_container = ui.column().classes("w-full")
-                    with filter_stats_container:
-                        err_df = compute_error_report(df)
-                        _render_error_table(err_df)
-                else:
-                    empty_fig = go.Figure()
-                    empty_fig.update_layout(height=200, title_text="Enable filter in the Filter tab")
-                    plot_filter_3d = ui.plotly(empty_fig).classes("w-full")
-                    plot_filter_2d = ui.plotly(empty_fig).classes("w-full")
-                    filter_stats_container = ui.column().classes("w-full")
+            # Filter error plots and stats (always shown if filter ran successfully)
+            if _CAN_FILTER and "eskf_pos_n" in df.columns:
+                ui.separator().classes("my-4")
+                ui.label("Kalman Filter Performance").classes("text-lg font-bold mb-2")
+                ui.label(
+                    "ESKF (Error-State Extended Kalman Filter) fuses sensor data. "
+                    "Quantized shows telemetry after radio transmission encoding."
+                ).classes("text-xs text-gray-600 mb-4")
+
+                plot_filter_error = ui.plotly(create_filter_error_figure(df, launch_delay=params.launch_delay)).classes(
+                    "w-full"
+                )
+
+                filter_stats_container = ui.column().classes("w-full mt-4")
+                with filter_stats_container:
+                    err_df = compute_error_report(df)
+                    _render_error_table(err_df)
+            else:
+                plot_filter_error = None
+                filter_stats_container = None
+                if not _CAN_FILTER:
+                    ui.label("⚠ Kalman filter unavailable. Build native extension: maturin develop --release").classes(
+                        "text-sm text-orange-600 mt-4"
+                    )
 
             if time_slider is not None:
                 try:

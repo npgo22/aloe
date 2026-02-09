@@ -27,6 +27,8 @@ try:
         dequantize_flight_array,
         quantize_recovery_array,
         dequantize_recovery_array,
+        detect_flight_states,
+        detect_truth_states,
     )
 
     _HAS_NATIVE = True
@@ -69,6 +71,14 @@ def _ned_to_geodetic(n: float, e: float, d: float, lat0: float, lon0: float, alt
     lon = lon0 + math.degrees(e / (_EARTH_R * math.cos(math.radians(lat0))))
     alt = alt0 - d
     return lat, lon, alt
+
+
+# State label lookup
+_STATE_LABELS = ["pad", "ignition", "burn", "coasting", "apogee", "recovery"]
+
+
+def _state_label(s: int) -> str:
+    return _STATE_LABELS[s] if 0 <= s < len(_STATE_LABELS) else "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +350,47 @@ def run_filter_pipeline(
         ]
     )
 
+    # --- Detect flight states (Rust state machine) ---
+    # ESKF state detection (from filter velocity estimates)
+    eskf_state_arr, eskf_trans = detect_flight_states(
+        times.tolist(),
+        list(vn),
+        list(ve),
+        list(vd),
+    )
+    # Truth state detection (from sim ground-truth data)
+    truth_accel_y = df["acceleration_y_ms2"].to_numpy().astype(np.float32)
+    truth_vel_y = df["velocity_y_ms"].to_numpy().astype(np.float32)
+    truth_thrust = df["thrust_N"].to_numpy().astype(np.float32)
+    truth_state_arr, truth_trans = detect_truth_states(
+        times.tolist(),
+        truth_accel_y.tolist(),
+        truth_vel_y.tolist(),
+        truth_thrust.tolist(),
+    )
+
+    # Per-sample state columns
+    df = df.with_columns(
+        [
+            pl.Series("truth_state", [_state_label(s) for s in truth_state_arr], dtype=pl.Utf8),
+            pl.Series("truth_state_id", truth_state_arr, dtype=pl.UInt8),
+            pl.Series("eskf_state", [_state_label(s) for s in eskf_state_arr], dtype=pl.Utf8),
+            pl.Series("eskf_state_id", eskf_state_arr, dtype=pl.UInt8),
+        ]
+    )
+
+    # Transition time columns (scalar broadcast to all rows)
+    state_names = ["pad", "ignition", "burn", "coasting", "apogee", "recovery"]
+    for i, name in enumerate(state_names):
+        truth_t = float(truth_trans[i])
+        eskf_t = float(eskf_trans[i])
+        df = df.with_columns(
+            [
+                pl.lit(truth_t).cast(pl.Float32).alias(f"truth_{name}_time"),
+                pl.lit(eskf_t).cast(pl.Float32).alias(f"eskf_{name}_time"),
+            ]
+        )
+
     return df
 
 
@@ -527,6 +578,42 @@ def compute_error_report(df: pl.DataFrame) -> pl.DataFrame:
                 n_samples=len(horiz_err_m),
             ),
         )
+
+    # ── State detection timing errors ──────────────────────────────
+    state_names_detect = ["ignition", "burn", "coasting", "apogee", "recovery"]
+    for name in state_names_detect:
+        truth_col = f"truth_{name}_time"
+        eskf_col = f"eskf_{name}_time"
+        if truth_col in df.columns and eskf_col in df.columns:
+            truth_t = float(df[truth_col][0])
+            eskf_t = float(df[eskf_col][0])
+            if not np.isnan(truth_t) and not np.isnan(eskf_t):
+                err = eskf_t - truth_t
+                rows.append(
+                    {
+                        "stage": "state_detection",
+                        "quantity": f"{name}_time_error (s)",
+                        "mean_error": err,
+                        "std_error": 0.0,
+                        "max_abs_error": abs(err),
+                        "rmse": abs(err),
+                        "p95_abs_error": abs(err),
+                        "n_samples": 1,
+                    }
+                )
+            else:
+                rows.append(
+                    {
+                        "stage": "state_detection",
+                        "quantity": f"{name}_time_error (s)",
+                        "mean_error": None,
+                        "std_error": None,
+                        "max_abs_error": None,
+                        "rmse": None,
+                        "p95_abs_error": None,
+                        "n_samples": 0,
+                    }
+                )
 
     return pl.DataFrame(rows)
 

@@ -62,12 +62,20 @@ uv run aloe cli [OPTIONS]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--filter` | off | Run ES-EKF sensor fusion + quantization |
-| `--filter-report` | off | Generate XLSX error report (implies `--filter`) |
+| `--no-filter` | off | Skip Kalman filter (runs by default) |
+| `--filter-report` | off | Generate XLSX error report |
 | `--mag-declination` | 0.0 | Magnetic declination (°) |
 | `--home-lat` | 35.0 | Home latitude (°) |
 | `--home-lon` | -106.0 | Home longitude (°) |
 | `--home-alt` | 1500.0 | Home altitude MSL (m) |
+
+#### Data Output Columns
+
+- **eskf**: Error-State Kalman Filter estimates (floating-point fusion of sensor data)
+- **quantized_flight**: Flight telemetry after quantization (simulates radio transmission limits)
+- **quant_roundtrip**: Quantization error (difference between original and quantize→dequantize roundtrip)
+- **quant_recovery**: Recovery phase quantized telemetry (parachute descent mode)
+
 
 ### Output
 

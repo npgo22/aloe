@@ -88,16 +88,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Sensor groups to disable: bmi088_accel bmi088_gyro adxl375 ms5611 lis3mdl lc29h",
     )
 
-    # ── Filter / Quantization ────────────────────────────────────
+    # ── Filter / Quantization (always enabled by default) ────────
     p.add_argument(
-        "--filter",
+        "--no-filter",
         action="store_true",
-        help="Run ES-EKF sensor fusion + telemetry quantization (requires aloe_core native lib)",
+        help="Skip Kalman filter (by default, filter always runs if native lib available)",
     )
     p.add_argument(
         "--filter-report",
         action="store_true",
-        help="Generate XLSX error report (implies --filter)",
+        help="Generate XLSX error report (requires filter)",
     )
     p.add_argument(
         "--mag-declination",
@@ -177,28 +177,31 @@ def run_cli(argv: list[str] | None = None) -> None:
         if not args.no_sensors:
             df = add_sensor_data(df, sensor_cfg)
 
-        # ── Filter pipeline ──────────────────────────────────────
-        run_filter = args.filter or args.filter_report
+        # ── Filter pipeline (default: always run if available) ──────
+        run_filter = not args.no_filter
         if run_filter:
             if not _HAS_FILTER:
-                print("✗ aloe_core native lib not available. Build with: maturin develop --release", file=sys.stderr)
-                sys.exit(1)
-            fcfg = FilterConfig(
-                mag_declination_deg=args.mag_declination,
-                home_lat_deg=args.home_lat,
-                home_lon_deg=args.home_lon,
-                home_alt_m=args.home_alt,
-            )
-            df = run_filter_pipeline(df, fcfg)
-            err_df = compute_error_report(df)
-            print("\n── Error Statistics ──")
-            print(err_df)
+                print(
+                    "⚠ aloe_core native lib not available. Skipping filter. " "Build with: maturin develop --release",
+                    file=sys.stderr,
+                )
+            else:
+                fcfg = FilterConfig(
+                    mag_declination_deg=args.mag_declination,
+                    home_lat_deg=args.home_lat,
+                    home_lon_deg=args.home_lon,
+                    home_alt_m=args.home_alt,
+                )
+                df = run_filter_pipeline(df, fcfg)
+                err_df = compute_error_report(df)
+                print("\n── Error Statistics ──")
+                print(err_df)
 
-            if args.filter_report:
-                report_path = args.output_dir / "sim_single_report.xlsx"
-                report_path.parent.mkdir(parents=True, exist_ok=True)
-                write_error_report_xlsx(err_df, df, str(report_path))
-                print(f"✓ Error report: {report_path}")
+                if args.filter_report:
+                    report_path = args.output_dir / "sim_single_report.xlsx"
+                    report_path.parent.mkdir(parents=True, exist_ok=True)
+                    write_error_report_xlsx(err_df, df, str(report_path))
+                    print(f"✓ Error report: {report_path}")
 
         out_path = args.output_dir / "sim_single"
         _write(df, out_path, args.format)
@@ -240,11 +243,8 @@ def run_cli(argv: list[str] | None = None) -> None:
             df = add_sensor_data(df, sensor_cfg)
 
         # ── Filter pipeline (sweep) ─────────────────────────────
-        run_filter = args.filter or args.filter_report
-        if run_filter:
-            if not _HAS_FILTER:
-                print("✗ aloe_core native lib not available.", file=sys.stderr)
-                sys.exit(1)
+        run_filter = not args.no_filter
+        if run_filter and _HAS_FILTER:
             fcfg = FilterConfig(
                 mag_declination_deg=args.mag_declination,
                 home_lat_deg=args.home_lat,
@@ -297,6 +297,17 @@ def run_cli(argv: list[str] | None = None) -> None:
             row["eskf_vel3d_max_ms"] = float(np.max(eskf_vel_err))
             row["eskf_vel3d_p95_ms"] = float(np.percentile(eskf_vel_err, 95))
 
+            # State detection timing errors
+            for sname in ["ignition", "burn", "coasting", "apogee", "recovery"]:
+                truth_col = f"truth_{sname}_time"
+                eskf_col = f"eskf_{sname}_time"
+                if truth_col in df.columns and eskf_col in df.columns:
+                    truth_t = float(df[truth_col][0])
+                    eskf_t = float(df[eskf_col][0])
+                    if not np.isnan(truth_t) and not np.isnan(eskf_t):
+                        row[f"state_{sname}_err_s"] = float(eskf_t - truth_t)
+                        row[f"state_{sname}_abserr_s"] = float(abs(eskf_t - truth_t))
+
         if "q_flight_pos_n_m" in df.columns:
             qpn = df["q_flight_pos_n_m"].to_numpy().astype(np.float32)
             qpe = df["q_flight_pos_e_m"].to_numpy().astype(np.float32)
@@ -340,6 +351,7 @@ def run_cli(argv: list[str] | None = None) -> None:
     # Group stats by category for readability
     flight_cols = ["apogee_m", "max_velocity_ms", "max_accel_ms2", "flight_time_s"]
     eskf_cols = [c for c in summary_df.columns if c.startswith("eskf_")]
+    state_cols = [c for c in summary_df.columns if c.startswith("state_")]
     quant_vs_truth_cols = [c for c in summary_df.columns if c.startswith("quant_") and "_rt_" not in c]
     quant_rt_cols = [c for c in summary_df.columns if "_rt_" in c]
 
@@ -356,6 +368,7 @@ def run_cli(argv: list[str] | None = None) -> None:
     print("\n── Sweep Statistics ──")
     _print_group("Flight Parameters", flight_cols)
     _print_group("ESKF vs Truth", eskf_cols)
+    _print_group("State Detection Timing Errors", state_cols)
     _print_group("Quantized vs Truth", quant_vs_truth_cols)
     _print_group("Quantization Round-Trip (ESKF→Quant→Dequant)", quant_rt_cols)
 

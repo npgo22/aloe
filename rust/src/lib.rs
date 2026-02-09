@@ -3,6 +3,7 @@ mod lut_data;
 mod quantize;
 mod sensor;
 mod sim;
+pub mod state_machine;
 
 use pyo3::prelude::*;
 
@@ -18,5 +19,7 @@ fn aloe_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(quantize::dequantize_recovery_array, m)?)?;
     m.add_function(wrap_pyfunction!(sim::simulate_rocket_rs, m)?)?;
     m.add_function(wrap_pyfunction!(sensor::add_sensor_data_rs, m)?)?;
+    m.add_function(wrap_pyfunction!(state_machine::detect_flight_states, m)?)?;
+    m.add_function(wrap_pyfunction!(state_machine::detect_truth_states, m)?)?;
     Ok(())
 }
