@@ -1,4 +1,5 @@
 import io
+import hashlib
 from dataclasses import fields
 from typing import Any, Union
 from nicegui import run, ui
@@ -57,70 +58,6 @@ def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
                 )
             )
 
-        # BMI088 low-g accel — plot as 3D scatter of accel vector
-        if sensor_cfg.enabled.get("bmi088_accel") and "bmi088_accel_x_ms2" in df.columns:
-            mask = df["bmi088_accel_x_ms2"].is_not_null()
-            s_df = df.filter(mask)
-            traces.append(
-                go.Scatter3d(
-                    x=s_df["bmi088_accel_x_ms2"].to_list(),
-                    y=s_df["bmi088_accel_z_ms2"].to_list(),
-                    z=s_df["bmi088_accel_y_ms2"].to_list(),
-                    mode="markers",
-                    name="BMI088 Accel",
-                    marker=dict(color="orange", size=2, symbol="diamond", opacity=0.5),
-                    visible="legendonly",
-                )
-            )
-
-        # ADXL375 high-g accel
-        if sensor_cfg.enabled.get("adxl375") and "adxl375_accel_x_ms2" in df.columns:
-            mask = df["adxl375_accel_x_ms2"].is_not_null()
-            s_df = df.filter(mask)
-            traces.append(
-                go.Scatter3d(
-                    x=s_df["adxl375_accel_x_ms2"].to_list(),
-                    y=s_df["adxl375_accel_z_ms2"].to_list(),
-                    z=s_df["adxl375_accel_y_ms2"].to_list(),
-                    mode="markers",
-                    name="ADXL375 Accel",
-                    marker=dict(color="green", size=2, symbol="square", opacity=0.5),
-                    visible="legendonly",
-                )
-            )
-
-        # BMI088 gyro
-        if sensor_cfg.enabled.get("bmi088_gyro") and "bmi088_gyro_x_dps" in df.columns:
-            mask = df["bmi088_gyro_x_dps"].is_not_null()
-            s_df = df.filter(mask)
-            traces.append(
-                go.Scatter3d(
-                    x=s_df["bmi088_gyro_x_dps"].to_list(),
-                    y=s_df["bmi088_gyro_z_dps"].to_list(),
-                    z=s_df["bmi088_gyro_y_dps"].to_list(),
-                    mode="markers",
-                    name="BMI088 Gyro",
-                    marker=dict(color="purple", size=2, symbol="cross", opacity=0.5),
-                    visible="legendonly",
-                )
-            )
-
-        # LIS3MDL magnetometer
-        if sensor_cfg.enabled.get("lis3mdl") and "lis3mdl_mag_x_gauss" in df.columns:
-            mask = df["lis3mdl_mag_x_gauss"].is_not_null()
-            s_df = df.filter(mask)
-            traces.append(
-                go.Scatter3d(
-                    x=s_df["lis3mdl_mag_x_gauss"].to_list(),
-                    y=s_df["lis3mdl_mag_z_gauss"].to_list(),
-                    z=s_df["lis3mdl_mag_y_gauss"].to_list(),
-                    mode="markers",
-                    name="LIS3MDL Mag",
-                    marker=dict(color="cyan", size=2, symbol="x", opacity=0.5),
-                    visible="legendonly",
-                )
-            )
-
     fig = go.Figure(data=traces)
     fig.update_layout(
         scene=dict(
@@ -136,7 +73,13 @@ def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
 
 
 def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
-    """Create 2D subplot figure (altitude, velocity, accel, forces, mass)."""
+    """Create 2D subplot figure (altitude, velocity, accel, forces, mass).
+    
+    Note: Each trace includes its own x (time_s) array in the JSON payload.
+    Plotly.js doesn't support shared data arrays across traces, so we can't
+    deduplicate time_s in the JSON. However, with LTTB downsampling to ~2000
+    points per trace, the overhead is now ~16KB per trace vs ~160KB unsampled.
+    """
     if max_time is not None:
         df = df.filter(pl.col("time_s") <= max_time)
 
@@ -871,6 +814,26 @@ def create_filter_figures(df, max_time=None, launch_delay: float = 1.0):
     return fig_3d, fig_2d
 
 
+# Figure cache for diffing (avoids sending identical JSON)
+_figure_cache: dict[str, str] = {}
+
+
+def _fig_hash(fig) -> str:
+    """Fast hash of figure JSON for diffing."""
+    # plotly_json() is expensive, but necessary for accurate comparison
+    # We could also use fig.to_plotly_json() which is slightly faster
+    fig_json = fig.to_json()
+    return hashlib.md5(fig_json.encode()).hexdigest()
+
+
+def _update_if_changed(plot_element, fig, cache_key: str):
+    """Only call update_figure if the figure data has changed."""
+    fig_hash = _fig_hash(fig)
+    if cache_key not in _figure_cache or _figure_cache[cache_key] != fig_hash:
+        _figure_cache[cache_key] = fig_hash
+        plot_element.update_figure(fig)
+
+
 @ui.page("/")
 def index_page():
     params = RocketParams()
@@ -928,17 +891,18 @@ def index_page():
 
         figs = await run.io_bound(_build_figures)
 
+        # Figure diffing: only update if data changed (reduces WebSocket traffic)
         if plot_3d is not None:
-            plot_3d.update_figure(figs["3d"])
+            _update_if_changed(plot_3d, figs["3d"], "3d")
         if plot_2d is not None:
-            plot_2d.update_figure(figs["2d"])
+            _update_if_changed(plot_2d, figs["2d"], "2d")
         if plot_sensor is not None:
-            plot_sensor.update_figure(figs["sensor"])
+            _update_if_changed(plot_sensor, figs["sensor"], "sensor")
         if "filter_3d" in figs:
             if plot_filter_3d is not None:
-                plot_filter_3d.update_figure(figs["filter_3d"])
+                _update_if_changed(plot_filter_3d, figs["filter_3d"], "filter_3d")
             if plot_filter_2d is not None:
-                plot_filter_2d.update_figure(figs["filter_2d"])
+                _update_if_changed(plot_filter_2d, figs["filter_2d"], "filter_2d")
             if filter_stats_container is not None:
                 filter_stats_container.clear()
                 with filter_stats_container:
