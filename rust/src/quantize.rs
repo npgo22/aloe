@@ -35,6 +35,7 @@ pub struct PyFlightData {
 
 #[pymethods]
 impl PyFlightData {
+    #[allow(clippy::too_many_arguments)]
     #[new]
     fn new(
         pos_n_m: i16,
@@ -128,6 +129,7 @@ impl PyRecoveryData {
 /// Returns a tuple of quantized column vectors.
 #[pyfunction]
 #[pyo3(signature = (pos_n, pos_e, alt_agl, vel_n, vel_e, vel_d, roll_deg, pitch_deg, yaw_deg))]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn quantize_flight_array(
     pos_n: Vec<f32>,
     pos_e: Vec<f32>,
@@ -178,6 +180,7 @@ pub fn quantize_flight_array(
 /// Dequantize flight data back to f32 arrays.
 /// Returns (pos_n, pos_e, alt_agl, vel_n, vel_e, vel_d, roll_deg, pitch_deg, yaw_deg).
 #[pyfunction]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn dequantize_flight_array(
     q_pn: Vec<i16>,
     q_pe: Vec<i16>,

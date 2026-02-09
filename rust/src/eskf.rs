@@ -465,6 +465,7 @@ impl PyRocketEsKf {
     ground_pressure,
     mag_declination_deg
 ))]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn run_eskf_on_arrays(
     times_s: Vec<f32>,
     // Gyro (rad/s)
