@@ -247,7 +247,12 @@ pub fn simulate(p: &RocketParams) -> SimResult {
             let fx = thrust_x + drag_x + wind_fx;
             let fy = thrust_y + drag_y + gravity_y;
             let fz = thrust_z + drag_z + wind_fz;
-            (fx / current_mass, fy / current_mass, fz / current_mass, drag_force)
+            (
+                fx / current_mass,
+                fy / current_mass,
+                fz / current_mass,
+                drag_force,
+            )
         };
 
         // ── Record state ──────────────────────────────────────
@@ -422,20 +427,32 @@ mod tests {
         let r = simulate(&p);
 
         // Should have a reasonable number of steps
-        assert!(r.time_s.len() > 1000, "Flight too short: {} steps", r.time_s.len());
+        assert!(
+            r.time_s.len() > 1000,
+            "Flight too short: {} steps",
+            r.time_s.len()
+        );
 
         // Apogee should be close to 31 742 m
-        let max_alt = r.altitude_m.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_alt = r
+            .altitude_m
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
         assert!(
             (max_alt - 31742.0).abs() < 50.0,
-            "Apogee {:.1} m not near 31742 m", max_alt
+            "Apogee {:.1} m not near 31742 m",
+            max_alt
         );
 
         // Flight should end when rocket returns to ground
         // (the last recorded step may still have y >= 0 because we record
         //  state *before* integration; the break fires on the *next* step)
         let last_alt = *r.altitude_m.last().unwrap();
-        assert!(last_alt <= 5.0, "Last altitude {last_alt} should be near ground");
+        assert!(
+            last_alt <= 5.0,
+            "Last altitude {last_alt} should be near ground"
+        );
     }
 
     /// Verify derived columns have the correct length.

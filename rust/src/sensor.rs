@@ -122,9 +122,39 @@ pub fn add_sensor_data_rs(
     // BMI088 low-g accel
     if bmi088_accel {
         let s = 175e-6 * 9.81 * bmi088_accel_hz.sqrt() * ns;
-        dict.set_item("bmi088_accel_x_ms2", sensor_col(&time_s, &acceleration_x_ms2, s, bmi088_accel_hz, bmi088_accel_latency_ms, &mut rng))?;
-        dict.set_item("bmi088_accel_y_ms2", sensor_col(&time_s, &acceleration_y_ms2, s, bmi088_accel_hz, bmi088_accel_latency_ms, &mut rng))?;
-        dict.set_item("bmi088_accel_z_ms2", sensor_col(&time_s, &acceleration_z_ms2, s, bmi088_accel_hz, bmi088_accel_latency_ms, &mut rng))?;
+        dict.set_item(
+            "bmi088_accel_x_ms2",
+            sensor_col(
+                &time_s,
+                &acceleration_x_ms2,
+                s,
+                bmi088_accel_hz,
+                bmi088_accel_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "bmi088_accel_y_ms2",
+            sensor_col(
+                &time_s,
+                &acceleration_y_ms2,
+                s,
+                bmi088_accel_hz,
+                bmi088_accel_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "bmi088_accel_z_ms2",
+            sensor_col(
+                &time_s,
+                &acceleration_z_ms2,
+                s,
+                bmi088_accel_hz,
+                bmi088_accel_latency_ms,
+                &mut rng,
+            ),
+        )?;
     }
 
     // BMI088 gyro
@@ -157,17 +187,77 @@ pub fn add_sensor_data_rs(
             gyro_x[i] *= alpha;
             gyro_y[i] *= alpha;
         }
-        dict.set_item("bmi088_gyro_x_dps", sensor_col(&time_s, &gyro_x, s, bmi088_gyro_hz, bmi088_gyro_latency_ms, &mut rng))?;
-        dict.set_item("bmi088_gyro_y_dps", sensor_col(&time_s, &gyro_y, s, bmi088_gyro_hz, bmi088_gyro_latency_ms, &mut rng))?;
-        dict.set_item("bmi088_gyro_z_dps", sensor_col(&time_s, &gyro_z, s, bmi088_gyro_hz, bmi088_gyro_latency_ms, &mut rng))?;
+        dict.set_item(
+            "bmi088_gyro_x_dps",
+            sensor_col(
+                &time_s,
+                &gyro_x,
+                s,
+                bmi088_gyro_hz,
+                bmi088_gyro_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "bmi088_gyro_y_dps",
+            sensor_col(
+                &time_s,
+                &gyro_y,
+                s,
+                bmi088_gyro_hz,
+                bmi088_gyro_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "bmi088_gyro_z_dps",
+            sensor_col(
+                &time_s,
+                &gyro_z,
+                s,
+                bmi088_gyro_hz,
+                bmi088_gyro_latency_ms,
+                &mut rng,
+            ),
+        )?;
     }
 
     // ADXL375 high-g accel
     if adxl375 {
         let s = 3.9e-3 * 9.81 * adxl375_hz.sqrt() * ns;
-        dict.set_item("adxl375_accel_x_ms2", sensor_col(&time_s, &acceleration_x_ms2, s, adxl375_hz, adxl375_latency_ms, &mut rng))?;
-        dict.set_item("adxl375_accel_y_ms2", sensor_col(&time_s, &acceleration_y_ms2, s, adxl375_hz, adxl375_latency_ms, &mut rng))?;
-        dict.set_item("adxl375_accel_z_ms2", sensor_col(&time_s, &acceleration_z_ms2, s, adxl375_hz, adxl375_latency_ms, &mut rng))?;
+        dict.set_item(
+            "adxl375_accel_x_ms2",
+            sensor_col(
+                &time_s,
+                &acceleration_x_ms2,
+                s,
+                adxl375_hz,
+                adxl375_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "adxl375_accel_y_ms2",
+            sensor_col(
+                &time_s,
+                &acceleration_y_ms2,
+                s,
+                adxl375_hz,
+                adxl375_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "adxl375_accel_z_ms2",
+            sensor_col(
+                &time_s,
+                &acceleration_z_ms2,
+                s,
+                adxl375_hz,
+                adxl375_latency_ms,
+                &mut rng,
+            ),
+        )?;
     }
 
     // MS5611 baro
@@ -178,7 +268,17 @@ pub fn add_sensor_data_rs(
             .iter()
             .map(|&h| 1013.25 * (1.0 - 0.0065 * h / 288.15).max(0.001).powf(exp))
             .collect();
-        dict.set_item("ms5611_pressure_mbar", sensor_col(&time_s, &pressure, s, ms5611_hz, ms5611_latency_ms, &mut rng))?;
+        dict.set_item(
+            "ms5611_pressure_mbar",
+            sensor_col(
+                &time_s,
+                &pressure,
+                s,
+                ms5611_hz,
+                ms5611_latency_ms,
+                &mut rng,
+            ),
+        )?;
     }
 
     // LIS3MDL mag
@@ -187,21 +287,90 @@ pub fn add_sensor_data_rs(
         let mx = vec![0.2; n];
         let my = vec![-0.4; n];
         let mz = vec![0.1; n];
-        dict.set_item("lis3mdl_mag_x_gauss", sensor_col(&time_s, &mx, s, lis3mdl_hz, lis3mdl_latency_ms, &mut rng))?;
-        dict.set_item("lis3mdl_mag_y_gauss", sensor_col(&time_s, &my, s, lis3mdl_hz, lis3mdl_latency_ms, &mut rng))?;
-        dict.set_item("lis3mdl_mag_z_gauss", sensor_col(&time_s, &mz, s, lis3mdl_hz, lis3mdl_latency_ms, &mut rng))?;
+        dict.set_item(
+            "lis3mdl_mag_x_gauss",
+            sensor_col(&time_s, &mx, s, lis3mdl_hz, lis3mdl_latency_ms, &mut rng),
+        )?;
+        dict.set_item(
+            "lis3mdl_mag_y_gauss",
+            sensor_col(&time_s, &my, s, lis3mdl_hz, lis3mdl_latency_ms, &mut rng),
+        )?;
+        dict.set_item(
+            "lis3mdl_mag_z_gauss",
+            sensor_col(&time_s, &mz, s, lis3mdl_hz, lis3mdl_latency_ms, &mut rng),
+        )?;
     }
 
     // LC29H GPS
     if lc29h {
         let ps = 1.5 / 1.1774 * ns;
         let vs = 0.05 * ns;
-        dict.set_item("gps_pos_x_m", sensor_col(&time_s, &position_x_m, ps, lc29h_hz, lc29h_latency_ms, &mut rng))?;
-        dict.set_item("gps_pos_y_m", sensor_col(&time_s, &altitude_m, ps, lc29h_hz, lc29h_latency_ms, &mut rng))?;
-        dict.set_item("gps_pos_z_m", sensor_col(&time_s, &position_z_m, ps, lc29h_hz, lc29h_latency_ms, &mut rng))?;
-        dict.set_item("gps_vel_x_ms", sensor_col(&time_s, &velocity_x_ms, vs, lc29h_hz, lc29h_latency_ms, &mut rng))?;
-        dict.set_item("gps_vel_y_ms", sensor_col(&time_s, &velocity_y_ms, vs, lc29h_hz, lc29h_latency_ms, &mut rng))?;
-        dict.set_item("gps_vel_z_ms", sensor_col(&time_s, &velocity_z_ms, vs, lc29h_hz, lc29h_latency_ms, &mut rng))?;
+        dict.set_item(
+            "gps_pos_x_m",
+            sensor_col(
+                &time_s,
+                &position_x_m,
+                ps,
+                lc29h_hz,
+                lc29h_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "gps_pos_y_m",
+            sensor_col(
+                &time_s,
+                &altitude_m,
+                ps,
+                lc29h_hz,
+                lc29h_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "gps_pos_z_m",
+            sensor_col(
+                &time_s,
+                &position_z_m,
+                ps,
+                lc29h_hz,
+                lc29h_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "gps_vel_x_ms",
+            sensor_col(
+                &time_s,
+                &velocity_x_ms,
+                vs,
+                lc29h_hz,
+                lc29h_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "gps_vel_y_ms",
+            sensor_col(
+                &time_s,
+                &velocity_y_ms,
+                vs,
+                lc29h_hz,
+                lc29h_latency_ms,
+                &mut rng,
+            ),
+        )?;
+        dict.set_item(
+            "gps_vel_z_ms",
+            sensor_col(
+                &time_s,
+                &velocity_z_ms,
+                vs,
+                lc29h_hz,
+                lc29h_latency_ms,
+                &mut rng,
+            ),
+        )?;
     }
 
     Ok(dict.into())
