@@ -1,6 +1,7 @@
 import polars as pl
+import numpy as np
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -17,6 +18,87 @@ class RocketParams:
     wind_speed: float = 3.0  # Wind speed along X axis (m/s)
     wind_speed_z: float = 0.0  # Crosswind speed along Z axis (m/s)
     air_density: float = 1.225  # Ambient air density (kg/m³)
+
+
+# ── Sensor specifications ────────────────────────────────────────────
+# Each sensor has: sample rate (Hz), latency (ms), noise characteristics.
+# Noise is modelled as additive white Gaussian noise (AWGN) with the
+# noise-density figures from each datasheet.
+#
+# Sources:
+#   BMI088 (gyro + low-g accel)
+#     Datasheet: https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmi088-ds001.pdf
+#     Gyroscope noise density:        0.014 °/s/√Hz  (Table 3, page 12)
+#     Accelerometer noise density:    175 µg/√Hz     (Table 7, page 17)
+#     Gyro ODR max:                   2000 Hz        (Table 1, page 10)
+#     Accel ODR max:                  1600 Hz        (Table 5, page 15)
+#     Gyro start-up time:             55 ms          (Table 1, page 10)
+#     Accel start-up time:            1 ms           (Table 5, page 15)
+#
+#   ADXL375 (high-g accel, ±200 g)
+#     Datasheet: https://www.analog.com/media/en/technical-documentation/data-sheets/adxl375.pdf
+#     Noise density:                  3.9 mg/√Hz     (Specifications, page 3)
+#     Max ODR (SPI):                  3200 Hz        (Specifications, page 2)
+#     Latency at 3200 Hz:             0.3 ms         (Specifications, page 3)
+#
+#   MS5611 (barometric altimeter)
+#     Datasheet: https://www.te.com/commerce/DocumentDelivery/DDEController?Action=showdoc&DocId=Data+Sheet%7FMS5611-01BA03%7FB3%7Fpdf%7FEnglish%7FENG_DS_MS5611-01BA03_B3.pdf
+#     Resolution (OSR=4096):          0.012 mbar     (Table, page 3)
+#     ADC conversion time (OSR=4096): 8.22 ms        (Table, page 3)
+#     Max sample rate ≈ 1/8.22ms:     ~122 Hz
+#     RMS noise (OSR=4096):           0.024 mbar     (Table, page 3)
+#
+#   LIS3MDL (3-axis magnetometer)
+#     Datasheet: https://www.st.com/resource/en/datasheet/lis3mdl.pdf
+#     Max ODR (ultra-high-perf):      155 Hz         (Table 2, page 8)   [Note: 1000 Hz only for single-axis FAST_ODR]
+#     Noise density (±4 gauss):       3.2 LSB RMS → ~0.0032 gauss RMS   (Table 3, page 9)
+#     Turn-on time:                   40 ms          (Table 2, page 8)
+#
+#   Quectel LC29H (GPS/GNSS)
+#     Datasheet: https://www.quectel.com/wp-content/uploads/2024/01/Quectel_LC29H_GNSS_Specification_V1.4.pdf
+#     Position accuracy:              1.5 m CEP      (Section 3, page 10)
+#     Velocity accuracy:              0.05 m/s       (Section 3, page 10)
+#     Max update rate:                10 Hz           (Section 3, page 9)
+#     TTFF (hot start):               1 s            (Section 3, page 9)
+#     TTFF (cold start):              26 s           (Section 3, page 9)
+
+
+@dataclass
+class SensorConfig:
+    """Configuration for artificial sensor data generation.
+
+    noise_scale: global multiplier for all sensor noise (1.0 = datasheet values).
+    seed:        RNG seed for reproducibility.
+    enabled:     which sensor groups to include.
+    """
+
+    noise_scale: float = 1.0
+    seed: int = 42
+    enabled: dict[str, bool] = field(default_factory=lambda: {
+        "bmi088_accel": True,   # BMI088 low-g accelerometer (3-axis, ±24 g)
+        "bmi088_gyro": True,    # BMI088 gyroscope (3-axis, ±2000 °/s)
+        "adxl375": True,        # ADXL375 high-g accelerometer (3-axis, ±200 g)
+        "ms5611": True,         # MS5611 barometric altimeter
+        "lis3mdl": True,        # LIS3MDL magnetometer (3-axis, ±4 gauss)
+        "lc29h": True,          # Quectel LC29H GPS/GNSS
+    })
+
+    # ── Per-sensor sample rates (Hz) ──────────────────────────────
+    # Defaults reflect typical operational rates, not maximums.
+    bmi088_accel_hz: float = 800.0    # Low-g accel ODR (max 1600 Hz)
+    bmi088_gyro_hz: float = 1000.0    # Gyro ODR (max 2000 Hz)
+    adxl375_hz: float = 800.0         # High-g accel ODR (max 3200 Hz)
+    ms5611_hz: float = 50.0           # Baro sample rate (max ~122 Hz at OSR=4096)
+    lis3mdl_hz: float = 80.0          # Magnetometer ODR (max 155 Hz UHP)
+    lc29h_hz: float = 10.0            # GPS update rate (max 10 Hz)
+
+    # ── Per-sensor latency (ms) ──────────────────────────────────
+    bmi088_accel_latency_ms: float = 1.0     # Accel start-up time
+    bmi088_gyro_latency_ms: float = 55.0     # Gyro start-up time
+    adxl375_latency_ms: float = 0.3          # At max ODR
+    ms5611_latency_ms: float = 8.22          # ADC conversion @ OSR=4096
+    lis3mdl_latency_ms: float = 40.0         # Turn-on time
+    lc29h_latency_ms: float = 1000.0         # TTFF hot start
 
 
 # ── Preset configurations ────────────────────────────────────────────
