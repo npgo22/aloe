@@ -1,0 +1,32 @@
+[project]
+name = "aloe"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Nolan Poe", email = "npgo22@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "nicegui>=3.7.1",
+    "numpy>=2.4.2",
+    "plotly>=6.5.2",
+    "polars>=1.38.1",
+    "xlsxwriter>=3.2.9",
+]
+
+[project.scripts]
+aloe = "aloe.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.9.21,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "black>=26.1.0",
+    "ruff>=0.15.0",
+]
+
+[tool.black]
+line-length=120
