@@ -19,12 +19,19 @@ dependencies = [
 aloe = "aloe.__main__:main"
 
 [build-system]
-requires = ["uv_build>=0.9.21,<0.10.0"]
-build-backend = "uv_build"
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+manifest-path = "rust/Cargo.toml"
+python-source = "src"
+module-name = "aloe.aloe_core"
+features = ["pyo3/extension-module"]
 
 [dependency-groups]
 dev = [
     "black>=26.1.0",
+    "maturin>=1.5",
     "ruff>=0.15.0",
 ]
 

@@ -8,6 +8,12 @@ import numpy as np
 from aloe.sim import RocketParams, SensorConfig, simulate_rocket, add_sensor_data
 from aloe.params import get_param_ranges
 
+try:
+    from aloe.filter import FilterConfig, run_filter_pipeline, compute_error_report, write_error_report_xlsx
+    _HAS_FILTER = True
+except Exception:
+    _HAS_FILTER = False
+
 # ── Sweep ranges (matching GUI slider bounds) ────────────────────────
 # Each entry: (param_name, start, stop, step)
 DEFAULT_SWEEP = [
@@ -75,6 +81,29 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Sensor groups to disable: bmi088_accel bmi088_gyro adxl375 ms5611 lis3mdl lc29h",
     )
+
+    # ── Filter / Quantization ────────────────────────────────────
+    p.add_argument(
+        "--filter", action="store_true",
+        help="Run ES-EKF sensor fusion + telemetry quantization (requires aloe_core native lib)",
+    )
+    p.add_argument(
+        "--filter-report", action="store_true",
+        help="Generate XLSX error report (implies --filter)",
+    )
+    p.add_argument(
+        "--mag-declination", type=float, default=0.0,
+        help="Magnetic declination at launch site (degrees, default: 0)",
+    )
+    p.add_argument(
+        "--home-lat", type=float, default=35.0, help="Home latitude (deg, default: 35.0)",
+    )
+    p.add_argument(
+        "--home-lon", type=float, default=-106.0, help="Home longitude (deg, default: -106.0)",
+    )
+    p.add_argument(
+        "--home-alt", type=float, default=1500.0, help="Home altitude MSL (m, default: 1500)",
+    )
     return p
 
 
@@ -125,6 +154,30 @@ def run_cli(argv: list[str] | None = None) -> None:
         df = simulate_rocket(params)
         if not args.no_sensors:
             df = add_sensor_data(df, sensor_cfg)
+
+        # ── Filter pipeline ──────────────────────────────────────
+        run_filter = args.filter or args.filter_report
+        if run_filter:
+            if not _HAS_FILTER:
+                print("✗ aloe_core native lib not available. Build with: maturin develop --release", file=sys.stderr)
+                sys.exit(1)
+            fcfg = FilterConfig(
+                mag_declination_deg=args.mag_declination,
+                home_lat_deg=args.home_lat,
+                home_lon_deg=args.home_lon,
+                home_alt_m=args.home_alt,
+            )
+            df = run_filter_pipeline(df, fcfg)
+            err_df = compute_error_report(df)
+            print("\n── Error Statistics ──")
+            print(err_df)
+
+            if args.filter_report:
+                report_path = args.output_dir / "sim_single_report.xlsx"
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                write_error_report_xlsx(err_df, df, str(report_path))
+                print(f"✓ Error report: {report_path}")
+
         out_path = args.output_dir / "sim_single"
         _write(df, out_path, args.format)
         print(f"✓ Wrote {out_path.with_suffix('.' + args.format)}  ({len(df)} rows)")
@@ -161,6 +214,26 @@ def run_cli(argv: list[str] | None = None) -> None:
         df = simulate_rocket(params)
         if not args.no_sensors:
             df = add_sensor_data(df, sensor_cfg)
+
+        # ── Filter pipeline (sweep) ─────────────────────────────
+        run_filter = args.filter or args.filter_report
+        if run_filter:
+            if not _HAS_FILTER:
+                print("✗ aloe_core native lib not available.", file=sys.stderr)
+                sys.exit(1)
+            fcfg = FilterConfig(
+                mag_declination_deg=args.mag_declination,
+                home_lat_deg=args.home_lat,
+                home_lon_deg=args.home_lon,
+                home_alt_m=args.home_alt,
+            )
+            df = run_filter_pipeline(df, fcfg)
+            err_df = compute_error_report(df)
+
+            if args.filter_report:
+                report_path = args.output_dir / f"sim_{tag}_report.xlsx"
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                write_error_report_xlsx(err_df, df, str(report_path))
 
         out_path = args.output_dir / f"sim_{tag}"
         _write(df, out_path, args.format)

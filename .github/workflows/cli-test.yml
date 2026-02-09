@@ -1,0 +1,42 @@
+name: CLI Batch Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  cli-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install project
+        run: uv sync && uv run maturin develop --release
+
+      - name: Single run (no filter)
+        run: uv run aloe cli --single --no-sensors -o /tmp/aloe-test
+
+      - name: Single run with filter
+        run: uv run aloe cli --single --filter --filter-report -o /tmp/aloe-test
+
+      - name: Mini sweep (2 params × 2 steps)
+        run: uv run aloe cli --sweep-params dry_mass thrust --sweep-steps 2 --no-sensors -o /tmp/aloe-test
+
+      - name: Verify outputs exist
+        run: |
+          ls -la /tmp/aloe-test/
+          test -f /tmp/aloe-test/sim_single.parquet
+          test -f /tmp/aloe-test/sim_single_report.xlsx

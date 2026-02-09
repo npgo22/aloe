@@ -2,3 +2,6 @@ src/aloe/__pycache__
 **/*.pyc
 .venv
 .ruff_cache
+**/*.so
+rust/target
+**/*output*
