@@ -301,45 +301,61 @@ pub fn add_sensor_data_rs(
     }
 
     // ADXL375 high-g accel — ±200 g range (saturates at ±1962 m/s²)
+    // Only active when total acceleration > 50g to avoid noise during low-g phases
     if adxl375 {
         let s = 3.9e-3 * 9.81 * adxl375_hz.sqrt() * ns;
         let range = 200.0 * 9.81; // ±200 g in m/s²
-        dict.set_item(
-            "adxl375_accel_x_ms2",
-            sensor_col_saturating(
-                &time_s,
-                &acceleration_x_ms2,
-                s,
-                adxl375_hz,
-                adxl375_latency_ms,
-                range,
-                &mut rng,
-            ),
-        )?;
-        dict.set_item(
-            "adxl375_accel_y_ms2",
-            sensor_col_saturating(
-                &time_s,
-                &acceleration_y_ms2,
-                s,
-                adxl375_hz,
-                adxl375_latency_ms,
-                range,
-                &mut rng,
-            ),
-        )?;
-        dict.set_item(
-            "adxl375_accel_z_ms2",
-            sensor_col_saturating(
-                &time_s,
-                &acceleration_z_ms2,
-                s,
-                adxl375_hz,
-                adxl375_latency_ms,
-                range,
-                &mut rng,
-            ),
-        )?;
+        let threshold = 50.0 * 9.81; // 50g threshold for activation
+
+        // Calculate acceleration magnitude
+        let accel_magnitude: Vec<f64> = acceleration_x_ms2
+            .iter()
+            .zip(&acceleration_y_ms2)
+            .zip(&acceleration_z_ms2)
+            .map(|((ax, ay), az)| (ax * ax + ay * ay + az * az).sqrt())
+            .collect();
+
+        // Get raw sensor data
+        let mut adxl_x = sensor_col_saturating(
+            &time_s,
+            &acceleration_x_ms2,
+            s,
+            adxl375_hz,
+            adxl375_latency_ms,
+            range,
+            &mut rng,
+        );
+        let mut adxl_y = sensor_col_saturating(
+            &time_s,
+            &acceleration_y_ms2,
+            s,
+            adxl375_hz,
+            adxl375_latency_ms,
+            range,
+            &mut rng,
+        );
+        let mut adxl_z = sensor_col_saturating(
+            &time_s,
+            &acceleration_z_ms2,
+            s,
+            adxl375_hz,
+            adxl375_latency_ms,
+            range,
+            &mut rng,
+        );
+
+        // Filter: only output when acceleration is high enough
+        for i in 0..n {
+            if accel_magnitude[i] < threshold {
+                adxl_x[i] = f64::NAN;
+                adxl_y[i] = f64::NAN;
+                adxl_z[i] = f64::NAN;
+            }
+        }
+
+        dict.set_item("adxl375_accel_x_ms2", adxl_x)?;
+        dict.set_item("adxl375_accel_y_ms2", adxl_y)?;
+        dict.set_item("adxl375_accel_z_ms2", adxl_z)?;
     }
 
     // MS5611 baro
