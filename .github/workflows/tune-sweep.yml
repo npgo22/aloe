@@ -1,0 +1,137 @@
+name: ESKF Tuning Sweep (Per-Stage)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tune_steps:
+        description: "Steps per tuning parameter (log-spaced)"
+        type: number
+        default: 15
+      tune_stages:
+        description: "Stages to sweep (space-separated, default: all)"
+        type: string
+        default: "pad ignition burn coasting apogee recovery"
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Shared build step ───────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: astral-sh/setup-uv@v6
+      - name: Install project
+        run: uv sync && uv run maturin develop --release
+      - name: Cache installed env
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .venv
+            rust/target
+          key: aloe-tune-${{ github.sha }}
+
+  # ── Per-parameter OAT sweep (each param is an independent job) ──
+  sweep:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        param:
+          - accel_noise_density
+          - gyro_noise_density
+          - accel_bias_instability
+          - gyro_bias_instability
+          - pos_process_noise
+          - r_gps_pos
+          - r_gps_vel
+          - r_baro
+          - r_mag
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: astral-sh/setup-uv@v6
+      - name: Restore build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .venv
+            rust/target
+          key: aloe-tune-${{ github.sha }}
+      - name: Ensure project installed
+        run: uv sync && uv run maturin develop --release
+
+      - name: Sweep ${{ matrix.param }}
+        run: |
+          STEPS=${{ inputs.tune_steps || 15 }}
+          STAGES="${{ inputs.tune_stages || 'pad ignition burn coasting apogee recovery' }}"
+          uv run aloe cli \
+            --tune-sweep \
+            --tune-steps "$STEPS" \
+            --tune-params ${{ matrix.param }} \
+            --tune-stages $STAGES \
+            -o /tmp/aloe-tune-${{ matrix.param }}
+
+      - name: Verify outputs
+        run: |
+          ls -la /tmp/aloe-tune-${{ matrix.param }}/
+          test -e /tmp/aloe-tune-${{ matrix.param }}/tune_sweep_summary.csv
+          echo "── tune_sweep_summary.csv ──"
+          cat /tmp/aloe-tune-${{ matrix.param }}/tune_sweep_summary.csv
+
+      - name: Upload sweep results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tune-sweep-${{ matrix.param }}
+          path: /tmp/aloe-tune-${{ matrix.param }}/tune_sweep_summary.csv
+          retention-days: 30
+
+  # ── Aggregate all per-parameter results into one summary ────────
+  aggregate:
+    needs: sweep
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/tune-results
+          pattern: tune-sweep-*
+          merge-multiple: false
+
+      - name: Combine summaries
+        run: |
+          echo "── All tuning sweep results ──"
+          HEADER_DONE=false
+          for dir in /tmp/tune-results/tune-sweep-*/; do
+            csv="$dir/tune_sweep_summary.csv"
+            if [ -f "$csv" ]; then
+              if [ "$HEADER_DONE" = false ]; then
+                head -1 "$csv"
+                HEADER_DONE=true
+              fi
+              tail -n +2 "$csv"
+            fi
+          done | tee /tmp/tune-results/combined_tune_sweep.csv
+          echo ""
+          echo "Total rows: $(tail -n +2 /tmp/tune-results/combined_tune_sweep.csv | wc -l)"
+
+      - name: Upload combined results
+        uses: actions/upload-artifact@v4
+        with:
+          name: tune-sweep-combined
+          path: /tmp/tune-results/combined_tune_sweep.csv
+          retention-days: 30

@@ -11,7 +11,9 @@ All heavy computation happens in Rust via the ``aloe_core`` native extension
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from aloe.params import ESKF_TUNING_DEFAULTS
 
 import numpy as np
 import polars as pl
@@ -27,7 +29,6 @@ try:
         dequantize_flight_array,
         quantize_recovery_array,
         dequantize_recovery_array,
-        detect_flight_states,
         detect_truth_states,
     )
 
@@ -58,6 +59,36 @@ class FilterConfig:
     home_lon_deg: float = -106.0
     home_alt_m: float = 1500.0
 
+    # ── Per-stage ESKF tuning parameters ─────────────────────────
+    # Each is a list of 6 floats: [pad, ignition, burn, coasting, apogee, recovery]
+    accel_noise_density: list[float] = field(
+        default_factory=lambda: list(ESKF_TUNING_DEFAULTS["accel_noise_density"])
+    )
+    gyro_noise_density: list[float] = field(
+        default_factory=lambda: list(ESKF_TUNING_DEFAULTS["gyro_noise_density"])
+    )
+    accel_bias_instability: list[float] = field(
+        default_factory=lambda: list(ESKF_TUNING_DEFAULTS["accel_bias_instability"])
+    )
+    gyro_bias_instability: list[float] = field(
+        default_factory=lambda: list(ESKF_TUNING_DEFAULTS["gyro_bias_instability"])
+    )
+    pos_process_noise: list[float] = field(
+        default_factory=lambda: list(ESKF_TUNING_DEFAULTS["pos_process_noise"])
+    )
+    r_gps_pos: list[float] = field(
+        default_factory=lambda: list(ESKF_TUNING_DEFAULTS["r_gps_pos"])
+    )
+    r_gps_vel: list[float] = field(
+        default_factory=lambda: list(ESKF_TUNING_DEFAULTS["r_gps_vel"])
+    )
+    r_baro: list[float] = field(
+        default_factory=lambda: list(ESKF_TUNING_DEFAULTS["r_baro"])
+    )
+    r_mag: list[float] = field(
+        default_factory=lambda: list(ESKF_TUNING_DEFAULTS["r_mag"])
+    )
+
 
 # ---------------------------------------------------------------------------
 # NED ↔ Geodetic helpers (Python side, for generating lat/lon from sim)
@@ -65,7 +96,9 @@ class FilterConfig:
 _EARTH_R = 6_371_000.0
 
 
-def _ned_to_geodetic(n: float, e: float, d: float, lat0: float, lon0: float, alt0: float) -> tuple[float, float, float]:
+def _ned_to_geodetic(
+    n: float, e: float, d: float, lat0: float, lon0: float, alt0: float
+) -> tuple[float, float, float]:
     """Convert NED offset (m) to lat/lon/alt (deg, deg, m MSL)."""
     lat = lat0 + math.degrees(n / _EARTH_R)
     lon = lon0 + math.degrees(e / (_EARTH_R * math.cos(math.radians(lat0))))
@@ -192,7 +225,7 @@ def run_filter_pipeline(
     gps_ve = gps_raw_vz
     gps_vd = np.where(np.isnan(gps_raw_vy), np.nan, -gps_raw_vy)
 
-    # --- Run the Rust ES-EKF ---
+    # --- Run the Rust ES-EKF (with integrated state machine) ---
     (
         _t,
         pn,
@@ -205,6 +238,7 @@ def run_filter_pipeline(
         qx,
         qy,
         qk,
+        (eskf_state_arr, eskf_trans),
     ) = run_eskf_on_arrays(
         times.tolist(),
         gyro_n.tolist(),
@@ -228,6 +262,15 @@ def run_filter_pipeline(
         gps_vd.tolist(),
         cfg.ground_pressure_mbar,
         cfg.mag_declination_deg,
+        accel_noise_density=cfg.accel_noise_density,
+        gyro_noise_density=cfg.gyro_noise_density,
+        accel_bias_instability=cfg.accel_bias_instability,
+        gyro_bias_instability=cfg.gyro_bias_instability,
+        pos_process_noise=cfg.pos_process_noise,
+        r_gps_pos=cfg.r_gps_pos,
+        r_gps_vel=cfg.r_gps_vel,
+        r_baro=cfg.r_baro,
+        r_mag=cfg.r_mag,
     )
 
     # Add ESKF columns
@@ -276,29 +319,33 @@ def run_filter_pipeline(
     # Altitude AGL = -pos_d (NED down → AGL up)
     alt_agl = -pd_a
 
-    q_pn, q_pe, q_alt_cm, q_vn, q_ve, q_vd, q_roll, q_pitch, q_yaw = quantize_flight_array(
-        pn_a.tolist(),
-        pe_a.tolist(),
-        alt_agl.tolist(),
-        vn_a.tolist(),
-        ve_a.tolist(),
-        vd_a.tolist(),
-        roll_deg.tolist(),
-        pitch_deg.tolist(),
-        yaw_deg.tolist(),
+    q_pn, q_pe, q_alt_cm, q_vn, q_ve, q_vd, q_roll, q_pitch, q_yaw = (
+        quantize_flight_array(
+            pn_a.tolist(),
+            pe_a.tolist(),
+            alt_agl.tolist(),
+            vn_a.tolist(),
+            ve_a.tolist(),
+            vd_a.tolist(),
+            roll_deg.tolist(),
+            pitch_deg.tolist(),
+            yaw_deg.tolist(),
+        )
     )
 
     # Dequantize to measure round-trip error
-    dq_pn, dq_pe, dq_alt, dq_vn, dq_ve, dq_vd, dq_roll, dq_pitch, dq_yaw = dequantize_flight_array(
-        q_pn,
-        q_pe,
-        q_alt_cm,
-        q_vn,
-        q_ve,
-        q_vd,
-        q_roll,
-        q_pitch,
-        q_yaw,
+    dq_pn, dq_pe, dq_alt, dq_vn, dq_ve, dq_vd, dq_roll, dq_pitch, dq_yaw = (
+        dequantize_flight_array(
+            q_pn,
+            q_pe,
+            q_alt_cm,
+            q_vn,
+            q_ve,
+            q_vd,
+            q_roll,
+            q_pitch,
+            q_yaw,
+        )
     )
 
     df = df.with_columns(
@@ -350,14 +397,9 @@ def run_filter_pipeline(
         ]
     )
 
-    # --- Detect flight states (Rust state machine) ---
-    # ESKF state detection (from filter velocity estimates)
-    eskf_state_arr, eskf_trans = detect_flight_states(
-        times.tolist(),
-        list(vn),
-        list(ve),
-        list(vd),
-    )
+    # --- Detect flight states ---
+    # ESKF state detection is now integrated into run_eskf_on_arrays;
+    # eskf_state_arr and eskf_trans are already returned above.
     # Truth state detection (from sim ground-truth data)
     truth_accel_y = df["acceleration_y_ms2"].to_numpy().astype(np.float32)
     truth_vel_y = df["velocity_y_ms"].to_numpy().astype(np.float32)
@@ -372,9 +414,13 @@ def run_filter_pipeline(
     # Per-sample state columns
     df = df.with_columns(
         [
-            pl.Series("truth_state", [_state_label(s) for s in truth_state_arr], dtype=pl.Utf8),
+            pl.Series(
+                "truth_state", [_state_label(s) for s in truth_state_arr], dtype=pl.Utf8
+            ),
             pl.Series("truth_state_id", truth_state_arr, dtype=pl.UInt8),
-            pl.Series("eskf_state", [_state_label(s) for s in eskf_state_arr], dtype=pl.Utf8),
+            pl.Series(
+                "eskf_state", [_state_label(s) for s in eskf_state_arr], dtype=pl.Utf8
+            ),
             pl.Series("eskf_state_id", eskf_state_arr, dtype=pl.UInt8),
         ]
     )
@@ -482,7 +528,9 @@ def compute_error_report(df: pl.DataFrame) -> pl.DataFrame:
         _add("eskf", _compute_stats("vel_d (m/s)", truth_vd, ekf_vd))
 
         # 3D position error
-        pos_err_3d = np.sqrt((ekf_pn - truth_n) ** 2 + (ekf_pe - truth_e) ** 2 + (ekf_pd - truth_d) ** 2)
+        pos_err_3d = np.sqrt(
+            (ekf_pn - truth_n) ** 2 + (ekf_pe - truth_e) ** 2 + (ekf_pd - truth_d) ** 2
+        )
         _add(
             "eskf",
             ErrorStats(
@@ -514,7 +562,9 @@ def compute_error_report(df: pl.DataFrame) -> pl.DataFrame:
 
         # 3D position error (using alt_agl = -pos_d)
         q_pd = -qalt
-        qpos_err_3d = np.sqrt((qpn - truth_n) ** 2 + (qpe - truth_e) ** 2 + (q_pd - truth_d) ** 2)
+        qpos_err_3d = np.sqrt(
+            (qpn - truth_n) ** 2 + (qpe - truth_e) ** 2 + (q_pd - truth_d) ** 2
+        )
         _add(
             "quantized_flight",
             ErrorStats(
@@ -564,7 +614,12 @@ def compute_error_report(df: pl.DataFrame) -> pl.DataFrame:
 
         # Convert lat/lon error to metres for interpretability
         lat_err_m = (qrlat - eskf_lat) * (np.pi / 180.0) * _EARTH_R
-        lon_err_m = (qrlon - eskf_lon) * (np.pi / 180.0) * _EARTH_R * np.cos(np.radians(eskf_lat))
+        lon_err_m = (
+            (qrlon - eskf_lon)
+            * (np.pi / 180.0)
+            * _EARTH_R
+            * np.cos(np.radians(eskf_lat))
+        )
         horiz_err_m = np.sqrt(lat_err_m**2 + lon_err_m**2)
         _add(
             "quant_recovery",
@@ -655,7 +710,11 @@ def write_error_report_xlsx(
             "q_recovery_lon_deg",
             "q_recovery_alt_m",
         ]
-        all_pos = pos_cols + [c for c in eskf_pos_cols + q_pos_cols + recovery_cols if c in flight_df.columns]
+        all_pos = pos_cols + [
+            c
+            for c in eskf_pos_cols + q_pos_cols + recovery_cols
+            if c in flight_df.columns
+        ]
         pos_df = flight_df.select([c for c in all_pos if c in flight_df.columns])
 
         ws_pos = wb.add_worksheet("Positions")
@@ -671,7 +730,9 @@ def write_error_report_xlsx(
         vel_cols = ["time_s", "velocity_x_ms", "velocity_y_ms", "velocity_z_ms"]
         eskf_vel_cols = ["eskf_vel_n", "eskf_vel_e", "eskf_vel_d"]
         q_vel_cols = ["q_flight_vel_n_ms", "q_flight_vel_e_ms", "q_flight_vel_d_ms"]
-        all_vel = vel_cols + [c for c in eskf_vel_cols + q_vel_cols if c in flight_df.columns]
+        all_vel = vel_cols + [
+            c for c in eskf_vel_cols + q_vel_cols if c in flight_df.columns
+        ]
         vel_df = flight_df.select([c for c in all_vel if c in flight_df.columns])
 
         ws_vel = wb.add_worksheet("Velocities")
@@ -685,9 +746,15 @@ def write_error_report_xlsx(
 
         # Sheet 4: Attitude (quaternion + quantized Euler)
         att_cols = ["time_s"]
-        att_cols += [c for c in ["eskf_qw", "eskf_qx", "eskf_qy", "eskf_qz"] if c in flight_df.columns]
         att_cols += [
-            c for c in ["q_flight_roll_deg", "q_flight_pitch_deg", "q_flight_yaw_deg"] if c in flight_df.columns
+            c
+            for c in ["eskf_qw", "eskf_qx", "eskf_qy", "eskf_qz"]
+            if c in flight_df.columns
+        ]
+        att_cols += [
+            c
+            for c in ["q_flight_roll_deg", "q_flight_pitch_deg", "q_flight_yaw_deg"]
+            if c in flight_df.columns
         ]
         att_df = flight_df.select([c for c in att_cols if c in flight_df.columns])
 

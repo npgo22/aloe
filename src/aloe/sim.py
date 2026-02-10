@@ -229,6 +229,8 @@ def add_sensor_data(df: pl.DataFrame, sensor_cfg: SensorConfig) -> pl.DataFrame:
     # Convert NaN → null for Polars (sensor columns use null for "no sample")
     for col_name, col_data in sensor_data.items():
         series = pl.Series(name=col_name, values=col_data)
-        df = df.with_columns(pl.when(series.is_nan()).then(None).otherwise(series).alias(col_name))
+        df = df.with_columns(
+            pl.when(series.is_nan()).then(None).otherwise(series).alias(col_name)
+        )
 
     return df

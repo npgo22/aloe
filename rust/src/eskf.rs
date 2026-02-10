@@ -1,4 +1,5 @@
 use crate::lut_data::{cos_lut, powf_baro, sin_lut};
+use crate::state_machine::StateMachine;
 use nalgebra::{Matrix3, SMatrix, SVector, UnitQuaternion, Vector3};
 use pyo3::prelude::*;
 
@@ -9,24 +10,38 @@ const GRAVITY: f32 = 9.80665;
 const STD_TEMP_K: f32 = 288.15;
 const EARTH_RADIUS: f32 = 6_371_000.0;
 
-// Sensor Noise (Continuous)
-// These are *process* noise parameters, not sensor specs — they must account
-// for unmodeled dynamics (aero perturbations, thrust misalignment, wind gusts)
-// in addition to sensor noise.
-const ACCEL_NOISE_DENSITY: f32 = 0.5; // m/s²/√Hz  (aerodynamic + sensor uncertainty)
-const GYRO_NOISE_DENSITY: f32 = 0.005; // rad/s/√Hz  (orientation model uncertainty)
-const ACCEL_BIAS_INSTABILITY: f32 = 1e-4;
-const GYRO_BIAS_INSTABILITY: f32 = 1e-5;
+// ---------------------------------------------------------------------------
+// Tunable filter parameters
+// ---------------------------------------------------------------------------
+/// All ESKF tuning knobs — passed from Python so they can be swept.
+#[derive(Clone, Copy, Debug)]
+pub struct EskfTuning {
+    pub accel_noise_density: f32, // m/s²/√Hz
+    pub gyro_noise_density: f32,  // rad/s/√Hz
+    pub accel_bias_instability: f32,
+    pub gyro_bias_instability: f32,
+    pub pos_process_noise: f32, // m/√s
+    pub r_gps_pos: f32,         // GPS position variance (m²)
+    pub r_gps_vel: f32,         // GPS velocity variance ((m/s)²)
+    pub r_baro: f32,            // Baro altitude variance (m²)
+    pub r_mag: f32,             // Magnetometer variance
+}
 
-// Position random-walk process noise — accounts for velocity uncertainty
-// propagating into position over each prediction step.
-const POS_PROCESS_NOISE: f32 = 0.1; // m/√s
-
-// Measurement Noise (Discrete Variance)
-const R_GPS_POS: f32 = 9.0;
-const R_GPS_VEL: f32 = 0.25;
-const R_BARO: f32 = 4.0;
-const R_MAG: f32 = 0.05;
+impl Default for EskfTuning {
+    fn default() -> Self {
+        Self {
+            accel_noise_density: 0.5,
+            gyro_noise_density: 0.005,
+            accel_bias_instability: 1e-4,
+            gyro_bias_instability: 1e-5,
+            pos_process_noise: 0.1,
+            r_gps_pos: 9.0,
+            r_gps_vel: 0.25,
+            r_baro: 4.0,
+            r_mag: 0.05,
+        }
+    }
+}
 
 // Accelerometer Blending Thresholds (m/s²)
 const LOW_G_THRESHOLD: f32 = 145.0;
@@ -100,6 +115,7 @@ impl Default for Snapshot {
 pub struct RocketEsKf {
     pub state: NominalState,
     pub p_cov: ErrorCovariance,
+    pub tuning: EskfTuning,
 
     ground_pressure: f32,
     mag_reference: Vector3<f32>,
@@ -112,7 +128,7 @@ pub struct RocketEsKf {
 }
 
 impl RocketEsKf {
-    pub fn new(ground_pressure: f32, mag_declination_deg: f32) -> Self {
+    pub fn new(ground_pressure: f32, mag_declination_deg: f32, tuning: EskfTuning) -> Self {
         let mut p = ErrorCovariance::identity();
         p.fixed_view_mut::<3, 3>(0, 0).fill_diagonal(2.0);
         p.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(0.5);
@@ -130,6 +146,7 @@ impl RocketEsKf {
         Self {
             state: NominalState::new(),
             p_cov: p,
+            tuning,
             ground_pressure,
             mag_reference: mag_ref,
             geo_ref: None,
@@ -202,16 +219,17 @@ impl RocketEsKf {
         f_x.fixed_view_mut::<3, 3>(6, 12).fill_diagonal(-dt);
 
         let mut q = ErrorCovariance::zeros();
-        let and2 = ACCEL_NOISE_DENSITY * ACCEL_NOISE_DENSITY;
-        let gnd2 = GYRO_NOISE_DENSITY * GYRO_NOISE_DENSITY;
-        let pnq = POS_PROCESS_NOISE * POS_PROCESS_NOISE;
+        let t = &self.tuning;
+        let and2 = t.accel_noise_density * t.accel_noise_density;
+        let gnd2 = t.gyro_noise_density * t.gyro_noise_density;
+        let pnq = t.pos_process_noise * t.pos_process_noise;
         q.fixed_view_mut::<3, 3>(0, 0).fill_diagonal(pnq * dt); // position
         q.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(and2 * dt); // velocity
         q.fixed_view_mut::<3, 3>(6, 6).fill_diagonal(gnd2 * dt); // attitude
         q.fixed_view_mut::<3, 3>(9, 9)
-            .fill_diagonal(ACCEL_BIAS_INSTABILITY * dt);
+            .fill_diagonal(t.accel_bias_instability * dt);
         q.fixed_view_mut::<3, 3>(12, 12)
-            .fill_diagonal(GYRO_BIAS_INSTABILITY * dt);
+            .fill_diagonal(t.gyro_bias_instability * dt);
 
         self.p_cov = f_x * self.p_cov * f_x.transpose() + q;
         self.p_cov = (self.p_cov + self.p_cov.transpose()) * 0.5;
@@ -236,7 +254,7 @@ impl RocketEsKf {
             (STD_TEMP_K / lapse_pos) * (1.0 - powf_baro(pressure / self.ground_pressure));
         let z_meas = -alt_above_ground; // NED: D = -altitude
         let innovation = z_meas - self.state.position.z;
-        let r = SMatrix::<f32, 1, 1>::new(R_BARO);
+        let r = SMatrix::<f32, 1, 1>::new(self.tuning.r_baro);
         self.apply_correction(&h, &SVector::<f32, 1>::new(innovation), &r);
     }
 
@@ -248,7 +266,7 @@ impl RocketEsKf {
         let m_skew = skew_symmetric(m_pred_body);
         h.fixed_view_mut::<3, 3>(0, 6).copy_from(&m_skew);
 
-        let r = Matrix3::identity() * R_MAG;
+        let r = Matrix3::identity() * self.tuning.r_mag;
         self.apply_correction(&h, &innovation, &r);
     }
 
@@ -283,8 +301,10 @@ impl RocketEsKf {
         h.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(1.0);
 
         let mut r = SMatrix::<f32, 6, 6>::zeros();
-        r.fixed_view_mut::<3, 3>(0, 0).fill_diagonal(R_GPS_POS);
-        r.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(R_GPS_VEL);
+        r.fixed_view_mut::<3, 3>(0, 0)
+            .fill_diagonal(self.tuning.r_gps_pos);
+        r.fixed_view_mut::<3, 3>(3, 3)
+            .fill_diagonal(self.tuning.r_gps_vel);
 
         self.apply_correction(&h, &innovation, &r);
     }
@@ -398,7 +418,7 @@ impl PyRocketEsKf {
     #[new]
     fn new(ground_pressure: f32, mag_declination_deg: f32) -> Self {
         Self {
-            inner: RocketEsKf::new(ground_pressure, mag_declination_deg),
+            inner: RocketEsKf::new(ground_pressure, mag_declination_deg, EskfTuning::default()),
         }
     }
 
@@ -472,7 +492,17 @@ impl PyRocketEsKf {
     gps_pos_x, gps_pos_y, gps_pos_z,
     gps_vel_x, gps_vel_y, gps_vel_z,
     ground_pressure,
-    mag_declination_deg
+    mag_declination_deg,
+    *,
+    accel_noise_density = None,
+    gyro_noise_density = None,
+    accel_bias_instability = None,
+    gyro_bias_instability = None,
+    pos_process_noise = None,
+    r_gps_pos = None,
+    r_gps_vel = None,
+    r_baro = None,
+    r_mag = None,
 ))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn run_eskf_on_arrays(
@@ -506,6 +536,17 @@ pub fn run_eskf_on_arrays(
     // Config
     ground_pressure: f32,
     mag_declination_deg: f32,
+    // Per-stage tuning (keyword-only, each Vec has 6 elements: pad/ign/burn/coast/apogee/recovery)
+    // When None, uses uniform default for all stages.
+    accel_noise_density: Option<Vec<f32>>,
+    gyro_noise_density: Option<Vec<f32>>,
+    accel_bias_instability: Option<Vec<f32>>,
+    gyro_bias_instability: Option<Vec<f32>>,
+    pos_process_noise: Option<Vec<f32>>,
+    r_gps_pos: Option<Vec<f32>>,
+    r_gps_vel: Option<Vec<f32>>,
+    r_baro: Option<Vec<f32>>,
+    r_mag: Option<Vec<f32>>,
 ) -> (
     Vec<f32>,
     Vec<f32>,
@@ -518,9 +559,88 @@ pub fn run_eskf_on_arrays(
     Vec<f32>,
     Vec<f32>,
     Vec<f32>,
+    (Vec<u8>, [f32; 6]),
 ) {
     let n = times_s.len();
-    let mut kf = RocketEsKf::new(ground_pressure, mag_declination_deg);
+    let defaults = EskfTuning::default();
+
+    // Unpack per-stage tuning vectors (6 elements each) or uniform default
+    let and_v = accel_noise_density.unwrap_or_else(|| vec![defaults.accel_noise_density; 6]);
+    let gnd_v = gyro_noise_density.unwrap_or_else(|| vec![defaults.gyro_noise_density; 6]);
+    let abi_v = accel_bias_instability.unwrap_or_else(|| vec![defaults.accel_bias_instability; 6]);
+    let gbi_v = gyro_bias_instability.unwrap_or_else(|| vec![defaults.gyro_bias_instability; 6]);
+    let ppn_v = pos_process_noise.unwrap_or_else(|| vec![defaults.pos_process_noise; 6]);
+    let rgp_v = r_gps_pos.unwrap_or_else(|| vec![defaults.r_gps_pos; 6]);
+    let rgv_v = r_gps_vel.unwrap_or_else(|| vec![defaults.r_gps_vel; 6]);
+    let rb_v = r_baro.unwrap_or_else(|| vec![defaults.r_baro; 6]);
+    let rm_v = r_mag.unwrap_or_else(|| vec![defaults.r_mag; 6]);
+
+    // Build per-stage tuning array [pad, ignition, burn, coasting, apogee, recovery]
+    let stage_tunings: [EskfTuning; 6] = std::array::from_fn(|i| EskfTuning {
+        accel_noise_density: and_v
+            .get(i)
+            .copied()
+            .unwrap_or(defaults.accel_noise_density),
+        gyro_noise_density: gnd_v.get(i).copied().unwrap_or(defaults.gyro_noise_density),
+        accel_bias_instability: abi_v
+            .get(i)
+            .copied()
+            .unwrap_or(defaults.accel_bias_instability),
+        gyro_bias_instability: gbi_v
+            .get(i)
+            .copied()
+            .unwrap_or(defaults.gyro_bias_instability),
+        pos_process_noise: ppn_v.get(i).copied().unwrap_or(defaults.pos_process_noise),
+        r_gps_pos: rgp_v.get(i).copied().unwrap_or(defaults.r_gps_pos),
+        r_gps_vel: rgv_v.get(i).copied().unwrap_or(defaults.r_gps_vel),
+        r_baro: rb_v.get(i).copied().unwrap_or(defaults.r_baro),
+        r_mag: rm_v.get(i).copied().unwrap_or(defaults.r_mag),
+    });
+
+    // Start with pad tuning
+    let mut kf = RocketEsKf::new(ground_pressure, mag_declination_deg, stage_tunings[0]);
+    let mut sm = StateMachine::new();
+
+    // ── Static pad calibration ──────────────────────────────────────
+    // While the rocket sits on the pad the only force is gravity.
+    // Expected specific-force in NED = [0, 0, −g]; expected gyro = [0,0,0].
+    // Averaging the first quiet samples gives us initial bias estimates.
+    {
+        let expected_sf = Vector3::new(0.0, 0.0, -GRAVITY);
+        let mut gyro_sum = Vector3::<f32>::zeros();
+        let mut accel_sum = Vector3::<f32>::zeros();
+        let mut cal_n: u32 = 0;
+
+        for i in 0..n {
+            let has_gyro = !gyro_x[i].is_nan();
+            let has_al = !accel_low_x[i].is_nan();
+            let has_ah = !accel_high_x[i].is_nan();
+            if !(has_gyro && (has_al || has_ah)) {
+                continue;
+            }
+            let a = if has_al {
+                Vector3::new(accel_low_x[i], accel_low_y[i], accel_low_z[i])
+            } else {
+                Vector3::new(accel_high_x[i], accel_high_y[i], accel_high_z[i])
+            };
+            // Still on the pad? deviation from expected gravity should be small.
+            if (a - expected_sf).norm() > 3.0 {
+                break; // launch detected
+            }
+            gyro_sum += Vector3::new(gyro_x[i], gyro_y[i], gyro_z[i]);
+            accel_sum += a;
+            cal_n += 1;
+        }
+
+        if cal_n >= 20 {
+            let inv = 1.0 / cal_n as f32;
+            kf.state.gyro_bias = gyro_sum * inv;
+            kf.state.accel_bias = accel_sum * inv - expected_sf;
+            // Tighten covariance for bias states after calibration
+            kf.p_cov.fixed_view_mut::<3, 3>(9, 9).fill_diagonal(0.01);
+            kf.p_cov.fixed_view_mut::<3, 3>(12, 12).fill_diagonal(0.001);
+        }
+    }
 
     let mut out_time = Vec::with_capacity(n);
     let mut out_pn = Vec::with_capacity(n);
@@ -533,6 +653,7 @@ pub fn run_eskf_on_arrays(
     let mut out_qx = Vec::with_capacity(n);
     let mut out_qy = Vec::with_capacity(n);
     let mut out_qk = Vec::with_capacity(n);
+    let mut out_states = Vec::with_capacity(n);
 
     for i in 0..n {
         let t_us = (times_s[i] * 1_000_000.0) as u64;
@@ -583,13 +704,24 @@ pub fn run_eskf_on_arrays(
             h.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(1.0);
 
             let mut r = SMatrix::<f32, 6, 6>::zeros();
-            r.fixed_view_mut::<3, 3>(0, 0).fill_diagonal(R_GPS_POS);
-            r.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(R_GPS_VEL);
+            r.fixed_view_mut::<3, 3>(0, 0)
+                .fill_diagonal(kf.tuning.r_gps_pos);
+            r.fixed_view_mut::<3, 3>(3, 3)
+                .fill_diagonal(kf.tuning.r_gps_vel);
 
             kf.apply_correction(&h, &innovation, &r);
         }
 
+        // Step the state machine on ESKF velocity and switch tuning
+        let dt = if i > 0 {
+            times_s[i] - times_s[i - 1]
+        } else {
+            0.0
+        };
         let s = &kf.state;
+        let flight_state = sm.update(times_s[i], s.velocity.x, s.velocity.y, s.velocity.z, dt);
+        kf.tuning = stage_tunings[flight_state as usize];
+
         let q = s.orientation.quaternion();
         out_time.push(times_s[i]);
         out_pn.push(s.position.x);
@@ -602,9 +734,21 @@ pub fn run_eskf_on_arrays(
         out_qx.push(q.i);
         out_qy.push(q.j);
         out_qk.push(q.k);
+        out_states.push(flight_state as u8);
     }
 
     (
-        out_time, out_pn, out_pe, out_pd, out_vn, out_ve, out_vd, out_qw, out_qx, out_qy, out_qk,
+        out_time,
+        out_pn,
+        out_pe,
+        out_pd,
+        out_vn,
+        out_ve,
+        out_vd,
+        out_qw,
+        out_qx,
+        out_qy,
+        out_qk,
+        (out_states, *sm.transition_times()),
     )
 }

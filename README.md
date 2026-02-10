@@ -76,6 +76,36 @@ uv run aloe cli [OPTIONS]
 - **quant_roundtrip**: Quantization error (difference between original and quantize→dequantize roundtrip)
 - **quant_recovery**: Recovery phase quantized telemetry (parachute descent mode)
 
+### ESKF Tune-Sweep
+
+The `--tune-sweep` mode performs a one-at-a-time (OAT) sweep of each ESKF tuning
+parameter **per flight stage**, finding the optimal value for each (parameter, stage)
+pair independently. The six flight stages are: `pad`, `ignition`, `burn`, `coasting`,
+`apogee`, `recovery`.
+
+```sh
+# Full sweep: 9 params × 6 stages × 15 steps = 810 runs
+uv run aloe cli --tune-sweep
+
+# Sweep specific params and/or stages
+uv run aloe cli --tune-sweep --tune-params r_baro r_gps_pos --tune-stages burn coasting
+
+# Fewer steps for a quick exploratory sweep
+uv run aloe cli --tune-sweep --tune-steps 5
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--tune-sweep` | off | Enable per-stage tuning sweep |
+| `--tune-steps` | 15 | Log-spaced steps per parameter |
+| `--tune-params` | *(all 9)* | Subset of tuning params to sweep |
+| `--tune-stages` | *(all 6)* | Subset of flight stages to sweep |
+
+Outputs a `tune_sweep_summary.csv` with columns `tuning_param`, `stage`, `value`,
+`pos3d_rmse_m`, and other error metrics. The best value per (param, stage) pair is
+printed at the end. A GitHub Actions workflow (`.github/workflows/tune-sweep.yml`)
+runs the sweep in parallel — one job per tuning parameter.
+
 
 ### Output
 

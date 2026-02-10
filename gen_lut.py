@@ -43,13 +43,19 @@ def main():
         f.write("use core::f32::consts::{FRAC_PI_2, PI, TAU};\n\n")
 
         # --- Sin table ---
-        f.write(f"// Quarter-wave sin, {SIN_N} entries, index i → sin(i/{SIN_N-1} × π/2)\n")
-        write_table(f, "SIN_TABLE", SIN_N, lambda i: math.sin(i / (SIN_N - 1) * math.pi / 2))
+        f.write(
+            f"// Quarter-wave sin, {SIN_N} entries, index i → sin(i/{SIN_N - 1} × π/2)\n"
+        )
+        write_table(
+            f, "SIN_TABLE", SIN_N, lambda i: math.sin(i / (SIN_N - 1) * math.pi / 2)
+        )
 
         f.write("\n")
 
         # --- Baro pow table ---
-        f.write(f"// x^{BARO_EXPONENT:.6f}, {BARO_N} entries, index i → (i/{BARO_N-1})^exp\n")
+        f.write(
+            f"// x^{BARO_EXPONENT:.6f}, {BARO_N} entries, index i → (i/{BARO_N - 1})^exp\n"
+        )
         write_table(
             f,
             "BARO_POW_TABLE",

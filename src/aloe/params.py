@@ -54,6 +54,39 @@ SENSOR_LATENCY_PARAMS: dict[str, ParamSpec] = {
     "lis3mdl_latency_ms": ParamSpec("LIS3MDL (ms)", 1, 100, 5),
     "lc29h_latency_ms": ParamSpec("GPS TTFF (ms)", 100, 26000, 100),
 }
+
+# ── ESKF tuning parameters ────────────────────────────────────────────
+# Each value sweeps logarithmically from min to max.
+ESKF_TUNING_PARAMS: dict[str, ParamSpec] = {
+    "accel_noise_density": ParamSpec("Accel Noise (m/s²/√Hz)", 0.01, 5.0, 0.1),
+    "gyro_noise_density": ParamSpec("Gyro Noise (rad/s/√Hz)", 0.0001, 0.1, 0.001),
+    "accel_bias_instability": ParamSpec("Accel Bias Inst.", 1e-6, 1e-2, 1e-5),
+    "gyro_bias_instability": ParamSpec("Gyro Bias Inst.", 1e-7, 1e-3, 1e-6),
+    "pos_process_noise": ParamSpec("Pos Proc Noise (m/√s)", 0.001, 1.0, 0.01),
+    "r_gps_pos": ParamSpec("R GPS Pos (m²)", 0.1, 100.0, 1.0),
+    "r_gps_vel": ParamSpec("R GPS Vel ((m/s)²)", 0.01, 10.0, 0.05),
+    "r_baro": ParamSpec("R Baro (m²)", 0.1, 50.0, 0.5),
+    "r_mag": ParamSpec("R Mag", 0.001, 1.0, 0.01),
+}
+
+# ── Flight stages (indices match Rust FlightState enum) ───────────────
+FLIGHT_STAGES: list[str] = ["pad", "ignition", "burn", "coasting", "apogee", "recovery"]
+NUM_STAGES: int = len(FLIGHT_STAGES)
+
+# ── Per-stage ESKF tuning defaults (must match Rust EskfTuning::default()) ─
+# Each key maps to a list of 6 values: [pad, ignition, burn, coasting, apogee, recovery].
+# Initially uniform — tune-sweep discovers per-stage optimal values.
+ESKF_TUNING_DEFAULTS: dict[str, list[float]] = {
+    "accel_noise_density": [0.5] * NUM_STAGES,
+    "gyro_noise_density": [0.005] * NUM_STAGES,
+    "accel_bias_instability": [1e-4] * NUM_STAGES,
+    "gyro_bias_instability": [1e-5] * NUM_STAGES,
+    "pos_process_noise": [0.1] * NUM_STAGES,
+    "r_gps_pos": [9.0] * NUM_STAGES,
+    "r_gps_vel": [0.25] * NUM_STAGES,
+    "r_baro": [4.0] * NUM_STAGES,
+    "r_mag": [0.05] * NUM_STAGES,
+}
 # ── Combined parameter definitions ────────────────────────────────────
 # All parameters that can be swept/configured
 ALL_PARAMS = {**ROCKET_PARAMS, **ENV_PARAMS}
@@ -63,22 +96,34 @@ ALL_PARAMS = {**ROCKET_PARAMS, **ENV_PARAMS}
 
 def get_rocket_sliders() -> list[tuple[str, str, float, float, float]]:
     """Return rocket parameter sliders in GUI format: (label, attr, min, max, step)."""
-    return [(spec.label, attr, spec.min, spec.max, spec.step) for attr, spec in ROCKET_PARAMS.items()]
+    return [
+        (spec.label, attr, spec.min, spec.max, spec.step)
+        for attr, spec in ROCKET_PARAMS.items()
+    ]
 
 
 def get_env_sliders() -> list[tuple[str, str, float, float, float]]:
     """Return environment parameter sliders in GUI format: (label, attr, min, max, step)."""
-    return [(spec.label, attr, spec.min, spec.max, spec.step) for attr, spec in ENV_PARAMS.items()]
+    return [
+        (spec.label, attr, spec.min, spec.max, spec.step)
+        for attr, spec in ENV_PARAMS.items()
+    ]
 
 
 def get_sensor_rate_sliders() -> list[tuple[str, str, float, float, float]]:
     """Return sensor rate sliders in GUI format: (label, attr, min, max, step)."""
-    return [(spec.label, attr, spec.min, spec.max, spec.step) for attr, spec in SENSOR_RATE_PARAMS.items()]
+    return [
+        (spec.label, attr, spec.min, spec.max, spec.step)
+        for attr, spec in SENSOR_RATE_PARAMS.items()
+    ]
 
 
 def get_sensor_latency_sliders() -> list[tuple[str, str, float, float, float]]:
     """Return sensor latency sliders in GUI format: (label, attr, min, max, step)."""
-    return [(spec.label, attr, spec.min, spec.max, spec.step) for attr, spec in SENSOR_LATENCY_PARAMS.items()]
+    return [
+        (spec.label, attr, spec.min, spec.max, spec.step)
+        for attr, spec in SENSOR_LATENCY_PARAMS.items()
+    ]
 
 
 # ── Helper functions for CLI ──────────────────────────────────────────

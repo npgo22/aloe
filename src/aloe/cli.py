@@ -7,10 +7,21 @@ import numpy as np
 import polars as pl
 
 from aloe.sim import RocketParams, SensorConfig, simulate_rocket, add_sensor_data
-from aloe.params import get_param_ranges
+from aloe.params import (
+    get_param_ranges,
+    ESKF_TUNING_PARAMS,
+    ESKF_TUNING_DEFAULTS,
+    FLIGHT_STAGES,
+    NUM_STAGES,
+)
 
 try:
-    from aloe.filter import FilterConfig, run_filter_pipeline, compute_error_report, write_error_report_xlsx
+    from aloe.filter import (
+        FilterConfig,
+        run_filter_pipeline,
+        compute_error_report,
+        write_error_report_xlsx,
+    )
 
     _HAS_FILTER = True
 except Exception:
@@ -48,7 +59,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── Single-run mode ──────────────────────────────────────────
     p.add_argument(
-        "--single", action="store_true", help="Run a single simulation with the given parameters instead of a sweep"
+        "--single",
+        action="store_true",
+        help="Run a single simulation with the given parameters instead of a sweep",
     )
     p.add_argument("--dry-mass", type=float, default=50.0)
     p.add_argument("--propellant-mass", type=float, default=150.0)
@@ -60,12 +73,23 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wind-speed", type=float, default=3.0)
     p.add_argument("--wind-speed-z", type=float, default=0.0)
     p.add_argument("--air-density", type=float, default=1.225)
-    p.add_argument("--launch-delay", type=float, default=1.0, help="Pre-launch idle time on the pad (s, default: 1)")
     p.add_argument(
-        "--spin-rate", type=float, default=0.0, help="Rocket roll rate around longitudinal axis (°/s, default: 0)"
+        "--launch-delay",
+        type=float,
+        default=1.0,
+        help="Pre-launch idle time on the pad (s, default: 1)",
     )
     p.add_argument(
-        "--thrust-cant", type=float, default=0.0, help="Thrust vector cant angle from body axis (°, default: 0)"
+        "--spin-rate",
+        type=float,
+        default=0.0,
+        help="Rocket roll rate around longitudinal axis (°/s, default: 0)",
+    )
+    p.add_argument(
+        "--thrust-cant",
+        type=float,
+        default=0.0,
+        help="Thrust vector cant angle from body axis (°, default: 0)",
     )
 
     # ── Sweep control ────────────────────────────────────────────
@@ -75,12 +99,26 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Parameters to sweep (default: dry_mass propellant_mass thrust burn_time)",
     )
-    p.add_argument("--sweep-steps", type=int, default=5, help="Number of steps per swept parameter (default: 5)")
+    p.add_argument(
+        "--sweep-steps",
+        type=int,
+        default=5,
+        help="Number of steps per swept parameter (default: 5)",
+    )
 
     # ── Sensor options ───────────────────────────────────────────
-    p.add_argument("--no-sensors", action="store_true", help="Skip adding artificial sensor data")
-    p.add_argument("--seed", type=int, default=42, help="RNG seed for sensor noise (default: 42)")
-    p.add_argument("--noise-scale", type=float, default=1.0, help="Global noise multiplier (default: 1.0)")
+    p.add_argument(
+        "--no-sensors", action="store_true", help="Skip adding artificial sensor data"
+    )
+    p.add_argument(
+        "--seed", type=int, default=42, help="RNG seed for sensor noise (default: 42)"
+    )
+    p.add_argument(
+        "--noise-scale",
+        type=float,
+        default=1.0,
+        help="Global noise multiplier (default: 1.0)",
+    )
     p.add_argument(
         "--disable-sensor",
         nargs="*",
@@ -98,6 +136,46 @@ def _build_parser() -> argparse.ArgumentParser:
         "--filter-report",
         action="store_true",
         help="Generate XLSX error report (requires filter)",
+    )
+
+    # ── ESKF tuning parameters ──────────────────────────────────
+    # Scalar values set all 6 stages uniformly.
+    tuning_group = p.add_argument_group(
+        "ESKF Tuning",
+        "Override Kalman filter tuning parameters (uniform across all stages)",
+    )
+    for tname, tdefaults in ESKF_TUNING_DEFAULTS.items():
+        tuning_group.add_argument(
+            f"--{tname.replace('_', '-')}",
+            type=float,
+            default=tdefaults[0],
+            help=f"{ESKF_TUNING_PARAMS[tname].label} (default: {tdefaults[0]})",
+        )
+
+    # ── Tune-sweep mode ───────────────────────────────────
+    p.add_argument(
+        "--tune-sweep",
+        action="store_true",
+        help="Sweep each ESKF tuning parameter per flight stage independently (OAT design)",
+    )
+    p.add_argument(
+        "--tune-steps",
+        type=int,
+        default=15,
+        help="Number of log-spaced steps per tuning parameter (default: 15)",
+    )
+    p.add_argument(
+        "--tune-params",
+        nargs="*",
+        default=None,
+        help="Tuning params to sweep (default: all). "
+        f"Valid: {' '.join(ESKF_TUNING_DEFAULTS.keys())}",
+    )
+    p.add_argument(
+        "--tune-stages",
+        nargs="*",
+        default=None,
+        help=f"Flight stages to sweep (default: all). Valid: {' '.join(FLIGHT_STAGES)}",
     )
     p.add_argument(
         "--mag-declination",
@@ -156,6 +234,228 @@ def run_cli(argv: list[str] | None = None) -> None:
     for s in args.disable_sensor:
         sensor_cfg.enabled[s] = False
 
+    def _build_filter_cfg(**tuning_overrides) -> "FilterConfig":
+        """Build FilterConfig from CLI args + optional per-stage tuning overrides.
+
+        ``tuning_overrides`` can contain:
+        - scalar float values → applied uniformly to all stages
+        - (param, stage_idx, value) is handled by the caller setting the list directly
+        - list[float] of length NUM_STAGES → used as-is
+        """
+        tuning_kw: dict[str, list[float]] = {}
+        for tname in ESKF_TUNING_DEFAULTS:
+            override = tuning_overrides.get(tname)
+            if override is not None:
+                if isinstance(override, list):
+                    tuning_kw[tname] = override
+                else:
+                    # Scalar override → apply to all stages
+                    tuning_kw[tname] = [float(override)] * NUM_STAGES
+            else:
+                # Use the CLI arg value (scalar) expanded to all stages
+                val = getattr(args, tname.replace("-", "_"))
+                tuning_kw[tname] = [float(val)] * NUM_STAGES
+        return FilterConfig(
+            mag_declination_deg=args.mag_declination,
+            home_lat_deg=args.home_lat,
+            home_lon_deg=args.home_lon,
+            home_alt_m=args.home_alt,
+            accel_noise_density=tuning_kw["accel_noise_density"],
+            gyro_noise_density=tuning_kw["gyro_noise_density"],
+            accel_bias_instability=tuning_kw["accel_bias_instability"],
+            gyro_bias_instability=tuning_kw["gyro_bias_instability"],
+            pos_process_noise=tuning_kw["pos_process_noise"],
+            r_gps_pos=tuning_kw["r_gps_pos"],
+            r_gps_vel=tuning_kw["r_gps_vel"],
+            r_baro=tuning_kw["r_baro"],
+            r_mag=tuning_kw["r_mag"],
+        )
+
+    # ── Tune-sweep mode ──────────────────────────────────────────
+    if args.tune_sweep:
+        if not _HAS_FILTER:
+            print(
+                "✗ tune-sweep requires aloe_core native lib. Build with: maturin develop --release",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        tune_names = args.tune_params or list(ESKF_TUNING_DEFAULTS.keys())
+        for tname in tune_names:
+            if tname not in ESKF_TUNING_DEFAULTS:
+                print(
+                    f"✗ Unknown tuning parameter '{tname}'. Valid: {', '.join(ESKF_TUNING_DEFAULTS)}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+        tune_stage_names = args.tune_stages or list(FLIGHT_STAGES)
+        for sname in tune_stage_names:
+            if sname not in FLIGHT_STAGES:
+                print(
+                    f"✗ Unknown flight stage '{sname}'. Valid: {', '.join(FLIGHT_STAGES)}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        tune_stage_indices = [FLIGHT_STAGES.index(s) for s in tune_stage_names]
+
+        steps = args.tune_steps
+        total = len(tune_names) * len(tune_stage_names) * steps
+        print(
+            f"Tune-sweep: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps = {total} simulations"
+        )
+
+        # Generate sim+sensor data once (rocket params are held constant)
+        base_params = RocketParams(
+            dry_mass=args.dry_mass,
+            propellant_mass=args.propellant_mass,
+            thrust=args.thrust,
+            burn_time=args.burn_time,
+            drag_coeff=args.drag_coeff,
+            ref_area=args.ref_area,
+            gravity=args.gravity,
+            wind_speed=args.wind_speed,
+            wind_speed_z=args.wind_speed_z,
+            air_density=args.air_density,
+            launch_delay=args.launch_delay,
+            spin_rate=args.spin_rate,
+            thrust_cant=args.thrust_cant,
+        )
+        base_df = simulate_rocket(base_params)
+        if not args.no_sensors:
+            base_df = add_sensor_data(base_df, sensor_cfg)
+
+        tune_summary_rows: list[dict] = []
+        run_idx = 0
+
+        for tname in tune_names:
+            spec = ESKF_TUNING_PARAMS[tname]
+            # Log-spaced sweep (most tuning params span orders of magnitude)
+            values = np.logspace(np.log10(spec.min), np.log10(spec.max), steps).tolist()
+
+            for stage_idx in tune_stage_indices:
+                stage_name = FLIGHT_STAGES[stage_idx]
+
+                for val in values:
+                    run_idx += 1
+                    # Build per-stage override: default for all stages,
+                    # except the swept stage gets the swept value
+                    defaults_for_param = list(ESKF_TUNING_DEFAULTS[tname])
+                    defaults_for_param[stage_idx] = val
+                    overrides = {tname: defaults_for_param}
+                    fcfg = _build_filter_cfg(**overrides)
+
+                    df = run_filter_pipeline(base_df, fcfg)
+
+                    tag = f"tune__{tname}__{stage_name}={val:.6g}"
+                    out_path = args.output_dir / f"sim_{tag}"
+                    _write(df, out_path, args.format)
+
+                    # Collect metrics
+                    trow: dict = {
+                        "tuning_param": tname,
+                        "stage": stage_name,
+                        "value": val,
+                    }
+
+                    if "eskf_pos_n" in df.columns:
+                        truth_n = df["position_x_m"].to_numpy().astype(np.float32)
+                        truth_e = df["position_z_m"].to_numpy().astype(np.float32)
+                        truth_d = -df["altitude_m"].to_numpy().astype(np.float32)
+                        truth_vn = df["velocity_x_ms"].to_numpy().astype(np.float32)
+                        truth_ve = df["velocity_z_ms"].to_numpy().astype(np.float32)
+                        truth_vd = -df["velocity_y_ms"].to_numpy().astype(np.float32)
+
+                        ekf_n = df["eskf_pos_n"].to_numpy().astype(np.float32)
+                        ekf_e = df["eskf_pos_e"].to_numpy().astype(np.float32)
+                        ekf_d = df["eskf_pos_d"].to_numpy().astype(np.float32)
+                        ekf_vn = df["eskf_vel_n"].to_numpy().astype(np.float32)
+                        ekf_ve = df["eskf_vel_e"].to_numpy().astype(np.float32)
+                        ekf_vd = df["eskf_vel_d"].to_numpy().astype(np.float32)
+
+                        pos_err = np.sqrt(
+                            (ekf_n - truth_n) ** 2
+                            + (ekf_e - truth_e) ** 2
+                            + (ekf_d - truth_d) ** 2
+                        )
+                        vel_err = np.sqrt(
+                            (ekf_vn - truth_vn) ** 2
+                            + (ekf_ve - truth_ve) ** 2
+                            + (ekf_vd - truth_vd) ** 2
+                        )
+                        trow["pos3d_rmse_m"] = float(np.sqrt(np.mean(pos_err**2)))
+                        trow["pos3d_max_m"] = float(np.max(pos_err))
+                        trow["pos3d_p95_m"] = float(np.percentile(pos_err, 95))
+                        trow["vel3d_rmse_ms"] = float(np.sqrt(np.mean(vel_err**2)))
+                        trow["vel3d_max_ms"] = float(np.max(vel_err))
+                        trow["vel3d_p95_ms"] = float(np.percentile(vel_err, 95))
+
+                        # Per-component RMSE
+                        trow["pos_n_rmse_m"] = float(
+                            np.sqrt(np.mean((ekf_n - truth_n) ** 2))
+                        )
+                        trow["pos_e_rmse_m"] = float(
+                            np.sqrt(np.mean((ekf_e - truth_e) ** 2))
+                        )
+                        trow["pos_d_rmse_m"] = float(
+                            np.sqrt(np.mean((ekf_d - truth_d) ** 2))
+                        )
+
+                        # State detection timing errors
+                        for sname in [
+                            "ignition",
+                            "burn",
+                            "coasting",
+                            "apogee",
+                            "recovery",
+                        ]:
+                            truth_col = f"truth_{sname}_time"
+                            eskf_col = f"eskf_{sname}_time"
+                            if truth_col in df.columns and eskf_col in df.columns:
+                                truth_t = float(df[truth_col][0])
+                                eskf_t = float(df[eskf_col][0])
+                                if not np.isnan(truth_t) and not np.isnan(eskf_t):
+                                    trow[f"state_{sname}_abserr_s"] = float(
+                                        abs(eskf_t - truth_t)
+                                    )
+
+                    tune_summary_rows.append(trow)
+                    print(
+                        f"  [{run_idx}/{total}] {tname}/{stage_name}={val:.6g}  pos3d_rmse={trow.get('pos3d_rmse_m', 'N/A')}"
+                    )
+
+        # Write summary
+        summary_df = pl.DataFrame(tune_summary_rows)
+        csv_path = args.output_dir / "tune_sweep_summary.csv"
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_df.write_csv(csv_path)
+        print(f"\n✓ Tune-sweep summary written to {csv_path}")
+
+        # Print per-(parameter, stage) best values
+        print("\n── Best tuning values (minimising pos3d_rmse_m) ──")
+        print(
+            f"  {'parameter':<28s} {'stage':<12s} {'best_value':>14s} {'pos3d_rmse':>12s} {'default_value':>14s}"
+        )
+        print(f"  {'─' * 28} {'─' * 12} {'─' * 14} {'─' * 12} {'─' * 14}")
+        for tname in tune_names:
+            for stage_idx in tune_stage_indices:
+                stage_name = FLIGHT_STAGES[stage_idx]
+                sub = summary_df.filter(
+                    (pl.col("tuning_param") == tname) & (pl.col("stage") == stage_name)
+                )
+                if "pos3d_rmse_m" in sub.columns and len(sub) > 0:
+                    best_idx = sub["pos3d_rmse_m"].arg_min()
+                    if best_idx is not None:
+                        best_val = sub["value"][best_idx]
+                        best_rmse = sub["pos3d_rmse_m"][best_idx]
+                        default = ESKF_TUNING_DEFAULTS[tname][stage_idx]
+                        print(
+                            f"  {tname:<28s} {stage_name:<12s} {best_val:>14.6g} {best_rmse:>12.4f} {default:>14.6g}"
+                        )
+
+        print(f"\n✓ All {total} tune-sweep runs written to {args.output_dir}/")
+        return
+
     if args.single:
         # ── Single run ───────────────────────────────────────────
         params = RocketParams(
@@ -182,16 +482,12 @@ def run_cli(argv: list[str] | None = None) -> None:
         if run_filter:
             if not _HAS_FILTER:
                 print(
-                    "⚠ aloe_core native lib not available. Skipping filter. " "Build with: maturin develop --release",
+                    "⚠ aloe_core native lib not available. Skipping filter. "
+                    "Build with: maturin develop --release",
                     file=sys.stderr,
                 )
             else:
-                fcfg = FilterConfig(
-                    mag_declination_deg=args.mag_declination,
-                    home_lat_deg=args.home_lat,
-                    home_lon_deg=args.home_lon,
-                    home_alt_m=args.home_alt,
-                )
+                fcfg = _build_filter_cfg()
                 df = run_filter_pipeline(df, fcfg)
                 err_df = compute_error_report(df)
                 print("\n── Error Statistics ──")
@@ -205,17 +501,27 @@ def run_cli(argv: list[str] | None = None) -> None:
 
         out_path = args.output_dir / "sim_single"
         _write(df, out_path, args.format)
-        print(f"✓ Wrote {out_path.parent / (out_path.name + '.' + args.format)}  ({len(df)} rows)")
+        print(
+            f"✓ Wrote {out_path.parent / (out_path.name + '.' + args.format)}  ({len(df)} rows)"
+        )
         return
 
     # ── Sweep mode ───────────────────────────────────────────────
-    sweep_names = args.sweep_params or ["dry_mass", "propellant_mass", "thrust", "burn_time"]
+    sweep_names = args.sweep_params or [
+        "dry_mass",
+        "propellant_mass",
+        "thrust",
+        "burn_time",
+    ]
     steps = args.sweep_steps
 
     # Validate
     for name in sweep_names:
         if name not in PARAM_RANGES:
-            print(f"✗ Unknown parameter '{name}'. Valid: {', '.join(PARAM_RANGES)}", file=sys.stderr)
+            print(
+                f"✗ Unknown parameter '{name}'. Valid: {', '.join(PARAM_RANGES)}",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
     # Build value lists
@@ -245,12 +551,7 @@ def run_cli(argv: list[str] | None = None) -> None:
         # ── Filter pipeline (sweep) ─────────────────────────────
         run_filter = not args.no_filter
         if run_filter and _HAS_FILTER:
-            fcfg = FilterConfig(
-                mag_declination_deg=args.mag_declination,
-                home_lat_deg=args.home_lat,
-                home_lon_deg=args.home_lon,
-                home_alt_m=args.home_alt,
-            )
+            fcfg = _build_filter_cfg()
             df = run_filter_pipeline(df, fcfg)
             err_df = compute_error_report(df)
 
@@ -286,13 +587,19 @@ def run_cli(argv: list[str] | None = None) -> None:
             ekf_vd = df["eskf_vel_d"].to_numpy().astype(np.float32)
 
             # ESKF vs Truth — 3D position RMSE & max
-            eskf_pos_err = np.sqrt((ekf_n - truth_n) ** 2 + (ekf_e - truth_e) ** 2 + (ekf_d - truth_d) ** 2)
+            eskf_pos_err = np.sqrt(
+                (ekf_n - truth_n) ** 2 + (ekf_e - truth_e) ** 2 + (ekf_d - truth_d) ** 2
+            )
             row["eskf_pos3d_rmse_m"] = float(np.sqrt(np.mean(eskf_pos_err**2)))
             row["eskf_pos3d_max_m"] = float(np.max(eskf_pos_err))
             row["eskf_pos3d_p95_m"] = float(np.percentile(eskf_pos_err, 95))
 
             # ESKF vs Truth — 3D velocity RMSE
-            eskf_vel_err = np.sqrt((ekf_vn - truth_vn) ** 2 + (ekf_ve - truth_ve) ** 2 + (ekf_vd - truth_vd) ** 2)
+            eskf_vel_err = np.sqrt(
+                (ekf_vn - truth_vn) ** 2
+                + (ekf_ve - truth_ve) ** 2
+                + (ekf_vd - truth_vd) ** 2
+            )
             row["eskf_vel3d_rmse_ms"] = float(np.sqrt(np.mean(eskf_vel_err**2)))
             row["eskf_vel3d_max_ms"] = float(np.max(eskf_vel_err))
             row["eskf_vel3d_p95_ms"] = float(np.percentile(eskf_vel_err, 95))
@@ -317,23 +624,31 @@ def run_cli(argv: list[str] | None = None) -> None:
             qvd = df["q_flight_vel_d_ms"].to_numpy().astype(np.float32)
 
             # Quantized vs Truth — 3D position RMSE & max
-            qt_pos_err = np.sqrt((qpn - truth_n) ** 2 + (qpe - truth_e) ** 2 + (q_d - truth_d) ** 2)
+            qt_pos_err = np.sqrt(
+                (qpn - truth_n) ** 2 + (qpe - truth_e) ** 2 + (q_d - truth_d) ** 2
+            )
             row["quant_pos3d_rmse_m"] = float(np.sqrt(np.mean(qt_pos_err**2)))
             row["quant_pos3d_max_m"] = float(np.max(qt_pos_err))
             row["quant_pos3d_p95_m"] = float(np.percentile(qt_pos_err, 95))
 
             # Quantized vs Truth — 3D velocity RMSE
-            qt_vel_err = np.sqrt((qvn - truth_vn) ** 2 + (qve - truth_ve) ** 2 + (qvd - truth_vd) ** 2)
+            qt_vel_err = np.sqrt(
+                (qvn - truth_vn) ** 2 + (qve - truth_ve) ** 2 + (qvd - truth_vd) ** 2
+            )
             row["quant_vel3d_rmse_ms"] = float(np.sqrt(np.mean(qt_vel_err**2)))
             row["quant_vel3d_max_ms"] = float(np.max(qt_vel_err))
             row["quant_vel3d_p95_ms"] = float(np.percentile(qt_vel_err, 95))
 
             # Quantization-only error (quant round-trip vs ESKF)
-            rt_pos_err = np.sqrt((qpn - ekf_n) ** 2 + (qpe - ekf_e) ** 2 + (q_d - ekf_d) ** 2)
+            rt_pos_err = np.sqrt(
+                (qpn - ekf_n) ** 2 + (qpe - ekf_e) ** 2 + (q_d - ekf_d) ** 2
+            )
             row["quant_rt_pos3d_rmse_m"] = float(np.sqrt(np.mean(rt_pos_err**2)))
             row["quant_rt_pos3d_max_m"] = float(np.max(rt_pos_err))
 
-            rt_vel_err = np.sqrt((qvn - ekf_vn) ** 2 + (qve - ekf_ve) ** 2 + (qvd - ekf_vd) ** 2)
+            rt_vel_err = np.sqrt(
+                (qvn - ekf_vn) ** 2 + (qve - ekf_ve) ** 2 + (qvd - ekf_vd) ** 2
+            )
             row["quant_rt_vel3d_rmse_ms"] = float(np.sqrt(np.mean(rt_vel_err**2)))
             row["quant_rt_vel3d_max_ms"] = float(np.max(rt_vel_err))
 
@@ -352,7 +667,9 @@ def run_cli(argv: list[str] | None = None) -> None:
     flight_cols = ["apogee_m", "max_velocity_ms", "max_accel_ms2", "flight_time_s"]
     eskf_cols = [c for c in summary_df.columns if c.startswith("eskf_")]
     state_cols = [c for c in summary_df.columns if c.startswith("state_")]
-    quant_vs_truth_cols = [c for c in summary_df.columns if c.startswith("quant_") and "_rt_" not in c]
+    quant_vs_truth_cols = [
+        c for c in summary_df.columns if c.startswith("quant_") and "_rt_" not in c
+    ]
     quant_rt_cols = [c for c in summary_df.columns if "_rt_" in c]
 
     def _print_group(title: str, cols: list[str]) -> None:
@@ -363,7 +680,9 @@ def run_cli(argv: list[str] | None = None) -> None:
         print(f"  {'─' * 30} {'─' * 12} {'─' * 12} {'─' * 12} {'─' * 12}")
         for col in cols:
             s = summary_df[col]
-            print(f"  {col:<30s} {s.min():>12.3f} {s.max():>12.3f} {s.mean():>12.3f} {s.std():>12.3f}")
+            print(
+                f"  {col:<30s} {s.min():>12.3f} {s.max():>12.3f} {s.mean():>12.3f} {s.std():>12.3f}"
+            )
 
     print("\n── Sweep Statistics ──")
     _print_group("Flight Parameters", flight_cols)
