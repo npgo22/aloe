@@ -164,6 +164,8 @@ impl RocketEsKf {
             lon0: lon_deg.to_radians(),
             alt0: alt_m,
         });
+        // Initialize position to home location in NED frame
+        self.state.position.z = -alt_m;
     }
 
     // =====================================================================

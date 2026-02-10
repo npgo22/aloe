@@ -55,10 +55,10 @@ def isa_pressure_at_altitude(alt_m: float) -> float:
                 p_base = isa_pressure_at_altitude(base_alt) if base_alt > 0 else P0
                 return p_base * math.exp(-G0 * layer_alt / (R * base_temp))
             # Lapse rate layer
-            # p = p_base * (T / T_base)^(g0 / (R * L))
+            # p = p_base * (T / T_base)^(-g0 / (R * L))
             t = base_temp + lapse * layer_alt
             p_base = P0 if base_alt == 0 else isa_pressure_at_altitude(base_alt)
-            exponent = G0 / (R * lapse)
+            exponent = -G0 / (R * lapse)
             return p_base * (t / base_temp) ** exponent
 
     # Above defined layers, approximate
@@ -130,28 +130,29 @@ def main():
             pr_target = 10 ** (-5 * t)  # Target pressure ratio
 
             # Find altitude by binary search
+            # pressure_ratios is ordered from high (1.0 at sea level) to low (1e-5 at high altitude)
             lo, hi = 0, len(pressure_ratios) - 1
             while lo < hi:
                 mid = (lo + hi) // 2
-                if pressure_ratios[mid] > pr_target:
-                    lo = mid + 1
-                else:
+                if pressure_ratios[mid] < pr_target:
                     hi = mid
+                else:
+                    lo = mid + 1
 
             # Interpolate
-            if lo == 0:
+            if hi == 0:
                 return altitudes_m[0]
-            if lo >= len(altitudes_m):
+            if hi >= len(altitudes_m):
                 return altitudes_m[-1]
 
-            pr_lo, pr_hi = pressure_ratios[lo - 1], pressure_ratios[lo]
-            alt_lo, alt_hi = altitudes_m[lo - 1], altitudes_m[lo]
+            pr_hi, pr_lo = pressure_ratios[hi - 1], pressure_ratios[hi]
+            alt_hi, alt_lo = altitudes_m[hi - 1], altitudes_m[hi]
 
             if abs(pr_hi - pr_lo) < 1e-15:
-                return alt_lo
+                return alt_hi
 
-            frac = (pr_target - pr_lo) / (pr_hi - pr_lo)
-            return alt_lo + frac * (alt_hi - alt_lo)
+            frac = (pr_target - pr_hi) / (pr_lo - pr_hi)
+            return alt_hi + frac * (alt_lo - alt_hi)
 
         write_table(f, "PRESSURE_TO_ALTITUDE_LUT", ALT_LUT_STEPS, pressure_to_altitude_lut)
 
