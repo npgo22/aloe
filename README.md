@@ -78,14 +78,29 @@ uv run aloe cli [OPTIONS]
 
 ### ESKF Tune-Sweep
 
-The `--tune-sweep` mode performs a one-at-a-time (OAT) sweep of each ESKF tuning
-parameter **per flight stage**, finding the optimal value for each (parameter, stage)
-pair independently. The six flight stages are: `pad`, `ignition`, `burn`, `coasting`,
-`apogee`, `recovery`.
+The `--tune-sweep` mode sweeps ESKF tuning parameters **per flight stage** to find
+optimal values. The four flight stages are:
+
+| Stage | Description |
+|-------|-------------|
+| `pad` | Stationary on the launch pad before ignition |
+| `burn` | Motor ignition through burnout (sustained upward acceleration) |
+| `coasting` | Post-burnout ascent, decelerating under gravity and drag |
+| `recovery` | Apogee reached, descending under drag / parachute |
+
+Two tuning strategies are available via `--tune-mode`:
+
+| Mode | Strategy | When to use |
+|------|----------|-------------|
+| `greedy` (default) | **Coordinate descent** — sweep the first param, lock the best value, then sweep the next param with the previous optimum locked in. Captures interactions between parameters. | Finding a combined optimum to use in production |
+| `oat` | **One-at-a-time** — each (param, stage) is swept independently while all others stay at defaults. Ignores interactions. | Helps determine which parameters matter most for each stage |
 
 ```sh
-# Full sweep: 9 params × 6 stages × 15 steps = 810 runs
+# Greedy coordinate descent (default, recommended)
 uv run aloe cli --tune-sweep
+
+# OAT sensitivity analysis
+uv run aloe cli --tune-sweep --tune-mode oat
 
 # Sweep specific params and/or stages
 uv run aloe cli --tune-sweep --tune-params r_baro r_gps_pos --tune-stages burn coasting
@@ -97,14 +112,37 @@ uv run aloe cli --tune-sweep --tune-steps 5
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tune-sweep` | off | Enable per-stage tuning sweep |
+| `--tune-mode` | `greedy` | Strategy: `greedy` (coordinate descent) or `oat` (sensitivity) |
 | `--tune-steps` | 15 | Log-spaced steps per parameter |
 | `--tune-params` | *(all 9)* | Subset of tuning params to sweep |
-| `--tune-stages` | *(all 6)* | Subset of flight stages to sweep |
+| `--tune-stages` | *(all 4)* | Subset of flight stages to sweep |
 
-Outputs a `tune_sweep_summary.csv` with columns `tuning_param`, `stage`, `value`,
-`pos3d_rmse_m`, and other error metrics. The best value per (param, stage) pair is
-printed at the end. A GitHub Actions workflow (`.github/workflows/tune-sweep.yml`)
-runs the sweep in parallel — one job per tuning parameter.
+**Outputs:**
+
+- `tune_sweep_summary.csv` — every evaluated (param, stage, value) with error metrics
+- `optimised_tuning.json` *(greedy mode only)* — the final optimised per-stage config,
+  ready to load or copy into your application
+
+**Interpreting the results:**
+
+| Metric | Meaning |
+|--------|---------|
+| `pos3d_rmse_m` | 3D position RMSE vs truth (primary objective) |
+| `vel3d_rmse_ms` | 3D velocity RMSE vs truth |
+| `pos3d_p95_m` | 95th-percentile position error |
+| `state_*_abserr_s` | Absolute error in detected flight state transition time |
+
+In **greedy mode**, the console shows `★` markers when a new best is found, and each
+dimension prints `→ locked param/stage = value (cumulative rmse = …)`. The final
+summary compares baseline (all defaults) vs optimised and prints the full per-stage
+config table. In **OAT mode**, you compare each parameter's sweep curve independently
+— look for the value that minimises `pos3d_rmse_m` in each (param, stage) cell.
+
+**GitHub Actions workflows:**
+
+- `.github/workflows/tune-sweep.yml` — OAT sensitivity (parallelised, one job per param)
+- `.github/workflows/tune-greedy.yml` — Greedy coordinate descent across multiple
+  rocket configurations (default, heavy/low-thrust, light/high-thrust, windy, etc.)
 
 
 ### Output

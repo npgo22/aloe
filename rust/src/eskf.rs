@@ -1,5 +1,6 @@
 use crate::lut_data::{cos_lut, powf_baro, sin_lut};
 use crate::state_machine::StateMachine;
+use crate::state_machine::NUM_STAGES;
 use nalgebra::{Matrix3, SMatrix, SVector, UnitQuaternion, Vector3};
 use pyo3::prelude::*;
 
@@ -536,7 +537,7 @@ pub fn run_eskf_on_arrays(
     // Config
     ground_pressure: f32,
     mag_declination_deg: f32,
-    // Per-stage tuning (keyword-only, each Vec has 6 elements: pad/ign/burn/coast/apogee/recovery)
+    // Per-stage tuning (keyword-only, each Vec has NUM_STAGES elements: pad/burn/coast/recovery)
     // When None, uses uniform default for all stages.
     accel_noise_density: Option<Vec<f32>>,
     gyro_noise_density: Option<Vec<f32>>,
@@ -559,24 +560,27 @@ pub fn run_eskf_on_arrays(
     Vec<f32>,
     Vec<f32>,
     Vec<f32>,
-    (Vec<u8>, [f32; 6]),
+    (Vec<u8>, [f32; NUM_STAGES]),
 ) {
     let n = times_s.len();
     let defaults = EskfTuning::default();
 
-    // Unpack per-stage tuning vectors (6 elements each) or uniform default
-    let and_v = accel_noise_density.unwrap_or_else(|| vec![defaults.accel_noise_density; 6]);
-    let gnd_v = gyro_noise_density.unwrap_or_else(|| vec![defaults.gyro_noise_density; 6]);
-    let abi_v = accel_bias_instability.unwrap_or_else(|| vec![defaults.accel_bias_instability; 6]);
-    let gbi_v = gyro_bias_instability.unwrap_or_else(|| vec![defaults.gyro_bias_instability; 6]);
-    let ppn_v = pos_process_noise.unwrap_or_else(|| vec![defaults.pos_process_noise; 6]);
-    let rgp_v = r_gps_pos.unwrap_or_else(|| vec![defaults.r_gps_pos; 6]);
-    let rgv_v = r_gps_vel.unwrap_or_else(|| vec![defaults.r_gps_vel; 6]);
-    let rb_v = r_baro.unwrap_or_else(|| vec![defaults.r_baro; 6]);
-    let rm_v = r_mag.unwrap_or_else(|| vec![defaults.r_mag; 6]);
+    // Unpack per-stage tuning vectors (NUM_STAGES elements each) or uniform default
+    let and_v =
+        accel_noise_density.unwrap_or_else(|| vec![defaults.accel_noise_density; NUM_STAGES]);
+    let gnd_v = gyro_noise_density.unwrap_or_else(|| vec![defaults.gyro_noise_density; NUM_STAGES]);
+    let abi_v =
+        accel_bias_instability.unwrap_or_else(|| vec![defaults.accel_bias_instability; NUM_STAGES]);
+    let gbi_v =
+        gyro_bias_instability.unwrap_or_else(|| vec![defaults.gyro_bias_instability; NUM_STAGES]);
+    let ppn_v = pos_process_noise.unwrap_or_else(|| vec![defaults.pos_process_noise; NUM_STAGES]);
+    let rgp_v = r_gps_pos.unwrap_or_else(|| vec![defaults.r_gps_pos; NUM_STAGES]);
+    let rgv_v = r_gps_vel.unwrap_or_else(|| vec![defaults.r_gps_vel; NUM_STAGES]);
+    let rb_v = r_baro.unwrap_or_else(|| vec![defaults.r_baro; NUM_STAGES]);
+    let rm_v = r_mag.unwrap_or_else(|| vec![defaults.r_mag; NUM_STAGES]);
 
-    // Build per-stage tuning array [pad, ignition, burn, coasting, apogee, recovery]
-    let stage_tunings: [EskfTuning; 6] = std::array::from_fn(|i| EskfTuning {
+    // Build per-stage tuning array [pad, burn, coasting, recovery]
+    let stage_tunings: [EskfTuning; NUM_STAGES] = std::array::from_fn(|i| EskfTuning {
         accel_noise_density: and_v
             .get(i)
             .copied()

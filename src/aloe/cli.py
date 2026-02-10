@@ -107,12 +107,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # ── Sensor options ───────────────────────────────────────────
-    p.add_argument(
-        "--no-sensors", action="store_true", help="Skip adding artificial sensor data"
-    )
-    p.add_argument(
-        "--seed", type=int, default=42, help="RNG seed for sensor noise (default: 42)"
-    )
+    p.add_argument("--no-sensors", action="store_true", help="Skip adding artificial sensor data")
+    p.add_argument("--seed", type=int, default=42, help="RNG seed for sensor noise (default: 42)")
     p.add_argument(
         "--noise-scale",
         type=float,
@@ -156,7 +152,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--tune-sweep",
         action="store_true",
-        help="Sweep each ESKF tuning parameter per flight stage independently (OAT design)",
+        help="Sweep ESKF tuning parameters per flight stage",
+    )
+    p.add_argument(
+        "--tune-mode",
+        choices=["greedy", "oat"],
+        default="greedy",
+        help="Tuning strategy: 'greedy' = coordinate descent (tune one param, lock best, "
+        "move to next — finds a combined optimum); 'oat' = one-at-a-time sensitivity "
+        "analysis (each param swept independently, ignores interactions). Default: greedy",
     )
     p.add_argument(
         "--tune-steps",
@@ -168,8 +172,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--tune-params",
         nargs="*",
         default=None,
-        help="Tuning params to sweep (default: all). "
-        f"Valid: {' '.join(ESKF_TUNING_DEFAULTS.keys())}",
+        help="Tuning params to sweep (default: all). " f"Valid: {' '.join(ESKF_TUNING_DEFAULTS.keys())}",
     )
     p.add_argument(
         "--tune-stages",
@@ -220,6 +223,50 @@ def _write(df, path: Path, fmt: str) -> None:
 
 # ── Sweep range definitions (matching GUI sliders) ───────────────────
 PARAM_RANGES = get_param_ranges()
+
+
+def _compute_tune_metrics(
+    df: pl.DataFrame,
+) -> dict:
+    """Compute position/velocity/state-timing error metrics from a filtered DataFrame."""
+    row: dict = {}
+    if "eskf_pos_n" not in df.columns:
+        return row
+    truth_n = df["position_x_m"].to_numpy().astype(np.float32)
+    truth_e = df["position_z_m"].to_numpy().astype(np.float32)
+    truth_d = -df["altitude_m"].to_numpy().astype(np.float32)
+    truth_vn = df["velocity_x_ms"].to_numpy().astype(np.float32)
+    truth_ve = df["velocity_z_ms"].to_numpy().astype(np.float32)
+    truth_vd = -df["velocity_y_ms"].to_numpy().astype(np.float32)
+
+    ekf_n = df["eskf_pos_n"].to_numpy().astype(np.float32)
+    ekf_e = df["eskf_pos_e"].to_numpy().astype(np.float32)
+    ekf_d = df["eskf_pos_d"].to_numpy().astype(np.float32)
+    ekf_vn = df["eskf_vel_n"].to_numpy().astype(np.float32)
+    ekf_ve = df["eskf_vel_e"].to_numpy().astype(np.float32)
+    ekf_vd = df["eskf_vel_d"].to_numpy().astype(np.float32)
+
+    pos_err = np.sqrt((ekf_n - truth_n) ** 2 + (ekf_e - truth_e) ** 2 + (ekf_d - truth_d) ** 2)
+    vel_err = np.sqrt((ekf_vn - truth_vn) ** 2 + (ekf_ve - truth_ve) ** 2 + (ekf_vd - truth_vd) ** 2)
+    row["pos3d_rmse_m"] = float(np.sqrt(np.mean(pos_err**2)))
+    row["pos3d_max_m"] = float(np.max(pos_err))
+    row["pos3d_p95_m"] = float(np.percentile(pos_err, 95))
+    row["vel3d_rmse_ms"] = float(np.sqrt(np.mean(vel_err**2)))
+    row["vel3d_max_ms"] = float(np.max(vel_err))
+    row["vel3d_p95_ms"] = float(np.percentile(vel_err, 95))
+    row["pos_n_rmse_m"] = float(np.sqrt(np.mean((ekf_n - truth_n) ** 2)))
+    row["pos_e_rmse_m"] = float(np.sqrt(np.mean((ekf_e - truth_e) ** 2)))
+    row["pos_d_rmse_m"] = float(np.sqrt(np.mean((ekf_d - truth_d) ** 2)))
+
+    for sname in ["burn", "coasting", "recovery"]:
+        truth_col = f"truth_{sname}_time"
+        eskf_col = f"eskf_{sname}_time"
+        if truth_col in df.columns and eskf_col in df.columns:
+            truth_t = float(df[truth_col][0])
+            eskf_t = float(df[eskf_col][0])
+            if not np.isnan(truth_t) and not np.isnan(eskf_t):
+                row[f"state_{sname}_abserr_s"] = float(abs(eskf_t - truth_t))
+    return row
 
 
 def run_cli(argv: list[str] | None = None) -> None:
@@ -300,10 +347,7 @@ def run_cli(argv: list[str] | None = None) -> None:
         tune_stage_indices = [FLIGHT_STAGES.index(s) for s in tune_stage_names]
 
         steps = args.tune_steps
-        total = len(tune_names) * len(tune_stage_names) * steps
-        print(
-            f"Tune-sweep: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps = {total} simulations"
-        )
+        mode = args.tune_mode
 
         # Generate sim+sensor data once (rocket params are held constant)
         base_params = RocketParams(
@@ -325,135 +369,195 @@ def run_cli(argv: list[str] | None = None) -> None:
         if not args.no_sensors:
             base_df = add_sensor_data(base_df, sensor_cfg)
 
+        # Compute baseline metrics (all defaults)
+        baseline_cfg = _build_filter_cfg()
+        baseline_df = run_filter_pipeline(base_df, baseline_cfg)
+        baseline_metrics = _compute_tune_metrics(baseline_df)
+        baseline_rmse = baseline_metrics.get("pos3d_rmse_m", float("inf"))
+        print(f"Baseline pos3d_rmse = {baseline_rmse:.4f} m (all defaults)")
+
+        current_best: dict[str, list[float]] | None = None
         tune_summary_rows: list[dict] = []
         run_idx = 0
 
-        for tname in tune_names:
-            spec = ESKF_TUNING_PARAMS[tname]
-            # Log-spaced sweep (most tuning params span orders of magnitude)
-            values = np.logspace(np.log10(spec.min), np.log10(spec.max), steps).tolist()
+        if mode == "greedy":
+            # ── Greedy coordinate descent ─────────────────────────
+            # Sweep one (param, stage) at a time, lock the best value,
+            # then move to the next. Each subsequent param benefits from
+            # all previously-optimised values.
+            n_dims = len(tune_names) * len(tune_stage_names)
+            total = n_dims * steps
+            print(
+                f"Greedy tune: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps "
+                f"= {total} evaluations (sequential coordinate descent)"
+            )
 
-            for stage_idx in tune_stage_indices:
-                stage_name = FLIGHT_STAGES[stage_idx]
+            # Current best config — start from defaults
+            current_best = {tname: list(ESKF_TUNING_DEFAULTS[tname]) for tname in ESKF_TUNING_DEFAULTS}
+            current_rmse = baseline_rmse
 
-                for val in values:
-                    run_idx += 1
-                    # Build per-stage override: default for all stages,
-                    # except the swept stage gets the swept value
-                    defaults_for_param = list(ESKF_TUNING_DEFAULTS[tname])
-                    defaults_for_param[stage_idx] = val
-                    overrides = {tname: defaults_for_param}
-                    fcfg = _build_filter_cfg(**overrides)
+            for tname in tune_names:
+                spec = ESKF_TUNING_PARAMS[tname]
+                values = np.logspace(np.log10(spec.min), np.log10(spec.max), steps).tolist()
 
-                    df = run_filter_pipeline(base_df, fcfg)
+                for stage_idx in tune_stage_indices:
+                    stage_name = FLIGHT_STAGES[stage_idx]
+                    best_val_for_dim = current_best[tname][stage_idx]
+                    best_rmse_for_dim = current_rmse
 
-                    tag = f"tune__{tname}__{stage_name}={val:.6g}"
-                    out_path = args.output_dir / f"sim_{tag}"
-                    _write(df, out_path, args.format)
+                    for val in values:
+                        run_idx += 1
+                        # Build config: current best + this (param, stage) override
+                        trial = {k: list(v) for k, v in current_best.items()}
+                        trial[tname][stage_idx] = val
+                        fcfg = _build_filter_cfg(**trial)
 
-                    # Collect metrics
-                    trow: dict = {
-                        "tuning_param": tname,
-                        "stage": stage_name,
-                        "value": val,
-                    }
+                        df = run_filter_pipeline(base_df, fcfg)
+                        metrics = _compute_tune_metrics(df)
+                        rmse = metrics.get("pos3d_rmse_m", float("inf"))
 
-                    if "eskf_pos_n" in df.columns:
-                        truth_n = df["position_x_m"].to_numpy().astype(np.float32)
-                        truth_e = df["position_z_m"].to_numpy().astype(np.float32)
-                        truth_d = -df["altitude_m"].to_numpy().astype(np.float32)
-                        truth_vn = df["velocity_x_ms"].to_numpy().astype(np.float32)
-                        truth_ve = df["velocity_z_ms"].to_numpy().astype(np.float32)
-                        truth_vd = -df["velocity_y_ms"].to_numpy().astype(np.float32)
+                        trow: dict = {
+                            "tuning_param": tname,
+                            "stage": stage_name,
+                            "value": val,
+                            **metrics,
+                        }
+                        tune_summary_rows.append(trow)
 
-                        ekf_n = df["eskf_pos_n"].to_numpy().astype(np.float32)
-                        ekf_e = df["eskf_pos_e"].to_numpy().astype(np.float32)
-                        ekf_d = df["eskf_pos_d"].to_numpy().astype(np.float32)
-                        ekf_vn = df["eskf_vel_n"].to_numpy().astype(np.float32)
-                        ekf_ve = df["eskf_vel_e"].to_numpy().astype(np.float32)
-                        ekf_vd = df["eskf_vel_d"].to_numpy().astype(np.float32)
+                        marker = ""
+                        if rmse < best_rmse_for_dim:
+                            best_rmse_for_dim = rmse
+                            best_val_for_dim = val
+                            marker = " ★"
 
-                        pos_err = np.sqrt(
-                            (ekf_n - truth_n) ** 2
-                            + (ekf_e - truth_e) ** 2
-                            + (ekf_d - truth_d) ** 2
-                        )
-                        vel_err = np.sqrt(
-                            (ekf_vn - truth_vn) ** 2
-                            + (ekf_ve - truth_ve) ** 2
-                            + (ekf_vd - truth_vd) ** 2
-                        )
-                        trow["pos3d_rmse_m"] = float(np.sqrt(np.mean(pos_err**2)))
-                        trow["pos3d_max_m"] = float(np.max(pos_err))
-                        trow["pos3d_p95_m"] = float(np.percentile(pos_err, 95))
-                        trow["vel3d_rmse_ms"] = float(np.sqrt(np.mean(vel_err**2)))
-                        trow["vel3d_max_ms"] = float(np.max(vel_err))
-                        trow["vel3d_p95_ms"] = float(np.percentile(vel_err, 95))
-
-                        # Per-component RMSE
-                        trow["pos_n_rmse_m"] = float(
-                            np.sqrt(np.mean((ekf_n - truth_n) ** 2))
-                        )
-                        trow["pos_e_rmse_m"] = float(
-                            np.sqrt(np.mean((ekf_e - truth_e) ** 2))
-                        )
-                        trow["pos_d_rmse_m"] = float(
-                            np.sqrt(np.mean((ekf_d - truth_d) ** 2))
+                        print(
+                            f"  [{run_idx}/{total}] {tname}/{stage_name}={val:.6g}  " f"pos3d_rmse={rmse:.4f}{marker}"
                         )
 
-                        # State detection timing errors
-                        for sname in [
-                            "ignition",
-                            "burn",
-                            "coasting",
-                            "apogee",
-                            "recovery",
-                        ]:
-                            truth_col = f"truth_{sname}_time"
-                            eskf_col = f"eskf_{sname}_time"
-                            if truth_col in df.columns and eskf_col in df.columns:
-                                truth_t = float(df[truth_col][0])
-                                eskf_t = float(df[eskf_col][0])
-                                if not np.isnan(truth_t) and not np.isnan(eskf_t):
-                                    trow[f"state_{sname}_abserr_s"] = float(
-                                        abs(eskf_t - truth_t)
-                                    )
-
-                    tune_summary_rows.append(trow)
+                    # Lock in this dimension's best
+                    current_best[tname][stage_idx] = best_val_for_dim
+                    current_rmse = best_rmse_for_dim
                     print(
-                        f"  [{run_idx}/{total}] {tname}/{stage_name}={val:.6g}  pos3d_rmse={trow.get('pos3d_rmse_m', 'N/A')}"
+                        f"  → locked {tname}/{stage_name} = {best_val_for_dim:.6g}  "
+                        f"(cumulative rmse = {current_rmse:.4f})"
                     )
 
-        # Write summary
+        else:
+            # ── OAT sensitivity analysis ─────────────────────────
+            total = len(tune_names) * len(tune_stage_names) * steps
+            print(
+                f"OAT sweep: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps "
+                f"= {total} evaluations (independent, no interaction)"
+            )
+
+            for tname in tune_names:
+                spec = ESKF_TUNING_PARAMS[tname]
+                values = np.logspace(np.log10(spec.min), np.log10(spec.max), steps).tolist()
+
+                for stage_idx in tune_stage_indices:
+                    stage_name = FLIGHT_STAGES[stage_idx]
+                    for val in values:
+                        run_idx += 1
+                        defaults_for_param = list(ESKF_TUNING_DEFAULTS[tname])
+                        defaults_for_param[stage_idx] = val
+                        overrides = {tname: defaults_for_param}
+                        fcfg = _build_filter_cfg(**overrides)
+
+                        df = run_filter_pipeline(base_df, fcfg)
+                        metrics = _compute_tune_metrics(df)
+
+                        tag = f"tune__{tname}__{stage_name}={val:.6g}"
+                        out_path = args.output_dir / f"sim_{tag}"
+                        _write(df, out_path, args.format)
+
+                        trow = {
+                            "tuning_param": tname,
+                            "stage": stage_name,
+                            "value": val,
+                            **metrics,
+                        }
+                        tune_summary_rows.append(trow)
+                        print(
+                            f"  [{run_idx}/{total}] {tname}/{stage_name}={val:.6g}  "
+                            f"pos3d_rmse={trow.get('pos3d_rmse_m', 'N/A')}"
+                        )
+
+        # ── Write summary CSV ────────────────────────────────────
         summary_df = pl.DataFrame(tune_summary_rows)
         csv_path = args.output_dir / "tune_sweep_summary.csv"
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         summary_df.write_csv(csv_path)
         print(f"\n✓ Tune-sweep summary written to {csv_path}")
 
-        # Print per-(parameter, stage) best values
-        print("\n── Best tuning values (minimising pos3d_rmse_m) ──")
+        # ── Print per-(parameter, stage) best values ─────────────
+        print(f"\n── Best tuning values per (param, stage)  [mode={mode}] ──")
         print(
-            f"  {'parameter':<28s} {'stage':<12s} {'best_value':>14s} {'pos3d_rmse':>12s} {'default_value':>14s}"
+            f"  {'parameter':<28s} {'stage':<12s} {'best_value':>14s} "
+            f"{'pos3d_rmse':>12s} {'default':>14s} {'change':>8s}"
         )
-        print(f"  {'─' * 28} {'─' * 12} {'─' * 14} {'─' * 12} {'─' * 14}")
+        print(f"  {'─' * 28} {'─' * 12} {'─' * 14} {'─' * 12} {'─' * 14} {'─' * 8}")
         for tname in tune_names:
             for stage_idx in tune_stage_indices:
                 stage_name = FLIGHT_STAGES[stage_idx]
-                sub = summary_df.filter(
-                    (pl.col("tuning_param") == tname) & (pl.col("stage") == stage_name)
-                )
+                sub = summary_df.filter((pl.col("tuning_param") == tname) & (pl.col("stage") == stage_name))
                 if "pos3d_rmse_m" in sub.columns and len(sub) > 0:
                     best_idx = sub["pos3d_rmse_m"].arg_min()
                     if best_idx is not None:
                         best_val = sub["value"][best_idx]
                         best_rmse = sub["pos3d_rmse_m"][best_idx]
                         default = ESKF_TUNING_DEFAULTS[tname][stage_idx]
+                        if default != 0:
+                            ratio = best_val / default
+                            change = f"{ratio:.2f}×"
+                        else:
+                            change = "N/A"
                         print(
-                            f"  {tname:<28s} {stage_name:<12s} {best_val:>14.6g} {best_rmse:>12.4f} {default:>14.6g}"
+                            f"  {tname:<28s} {stage_name:<12s} {best_val:>14.6g} "
+                            f"{best_rmse:>12.4f} {default:>14.6g} {change:>8s}"
                         )
 
-        print(f"\n✓ All {total} tune-sweep runs written to {args.output_dir}/")
+        # ── Final comparison: baseline vs optimised ──────────────
+        if mode == "greedy" and current_best is not None:
+            print("\n── Greedy result: baseline vs optimised ──")
+            final_cfg = _build_filter_cfg(**current_best)
+            final_df = run_filter_pipeline(base_df, final_cfg)
+            final_metrics = _compute_tune_metrics(final_df)
+            final_rmse = final_metrics.get("pos3d_rmse_m", float("inf"))
+
+            pct = (baseline_rmse - final_rmse) / baseline_rmse * 100 if baseline_rmse > 0 else 0
+            print(f"  Baseline  pos3d_rmse = {baseline_rmse:.4f} m")
+            print(f"  Optimised pos3d_rmse = {final_rmse:.4f} m  ({pct:+.1f}%)")
+            print(f"  Baseline  vel3d_rmse = {baseline_metrics.get('vel3d_rmse_ms', 0):.4f} m/s")
+            print(f"  Optimised vel3d_rmse = {final_metrics.get('vel3d_rmse_ms', 0):.4f} m/s")
+
+            # Print the final optimised config
+            print("\n  Optimised per-stage config:")
+            print(f"  {'parameter':<28s}", end="")
+            for sn in tune_stage_names:
+                print(f" {sn:>12s}", end="")
+            print()
+            print(f"  {'─' * 28}", end="")
+            for _ in tune_stage_names:
+                print(f" {'─' * 12}", end="")
+            print()
+            for tname in tune_names:
+                print(f"  {tname:<28s}", end="")
+                for si in tune_stage_indices:
+                    print(f" {current_best[tname][si]:>12.6g}", end="")
+                print()
+
+            # Write optimised config JSON
+            import json
+
+            config_path = args.output_dir / "optimised_tuning.json"
+            json_cfg = {
+                tname: {FLIGHT_STAGES[si]: current_best[tname][si] for si in range(NUM_STAGES)}
+                for tname in ESKF_TUNING_DEFAULTS
+            }
+            config_path.write_text(json.dumps(json_cfg, indent=2) + "\n")
+            print(f"\n  ✓ Optimised config written to {config_path}")
+
+        print(f"\n✓ Tune-sweep complete ({len(tune_summary_rows)} evaluations)")
         return
 
     if args.single:
@@ -482,8 +586,7 @@ def run_cli(argv: list[str] | None = None) -> None:
         if run_filter:
             if not _HAS_FILTER:
                 print(
-                    "⚠ aloe_core native lib not available. Skipping filter. "
-                    "Build with: maturin develop --release",
+                    "⚠ aloe_core native lib not available. Skipping filter. " "Build with: maturin develop --release",
                     file=sys.stderr,
                 )
             else:
@@ -501,9 +604,7 @@ def run_cli(argv: list[str] | None = None) -> None:
 
         out_path = args.output_dir / "sim_single"
         _write(df, out_path, args.format)
-        print(
-            f"✓ Wrote {out_path.parent / (out_path.name + '.' + args.format)}  ({len(df)} rows)"
-        )
+        print(f"✓ Wrote {out_path.parent / (out_path.name + '.' + args.format)}  ({len(df)} rows)")
         return
 
     # ── Sweep mode ───────────────────────────────────────────────
@@ -587,25 +688,19 @@ def run_cli(argv: list[str] | None = None) -> None:
             ekf_vd = df["eskf_vel_d"].to_numpy().astype(np.float32)
 
             # ESKF vs Truth — 3D position RMSE & max
-            eskf_pos_err = np.sqrt(
-                (ekf_n - truth_n) ** 2 + (ekf_e - truth_e) ** 2 + (ekf_d - truth_d) ** 2
-            )
+            eskf_pos_err = np.sqrt((ekf_n - truth_n) ** 2 + (ekf_e - truth_e) ** 2 + (ekf_d - truth_d) ** 2)
             row["eskf_pos3d_rmse_m"] = float(np.sqrt(np.mean(eskf_pos_err**2)))
             row["eskf_pos3d_max_m"] = float(np.max(eskf_pos_err))
             row["eskf_pos3d_p95_m"] = float(np.percentile(eskf_pos_err, 95))
 
             # ESKF vs Truth — 3D velocity RMSE
-            eskf_vel_err = np.sqrt(
-                (ekf_vn - truth_vn) ** 2
-                + (ekf_ve - truth_ve) ** 2
-                + (ekf_vd - truth_vd) ** 2
-            )
+            eskf_vel_err = np.sqrt((ekf_vn - truth_vn) ** 2 + (ekf_ve - truth_ve) ** 2 + (ekf_vd - truth_vd) ** 2)
             row["eskf_vel3d_rmse_ms"] = float(np.sqrt(np.mean(eskf_vel_err**2)))
             row["eskf_vel3d_max_ms"] = float(np.max(eskf_vel_err))
             row["eskf_vel3d_p95_ms"] = float(np.percentile(eskf_vel_err, 95))
 
             # State detection timing errors
-            for sname in ["ignition", "burn", "coasting", "apogee", "recovery"]:
+            for sname in ["burn", "coasting", "recovery"]:
                 truth_col = f"truth_{sname}_time"
                 eskf_col = f"eskf_{sname}_time"
                 if truth_col in df.columns and eskf_col in df.columns:
@@ -624,31 +719,23 @@ def run_cli(argv: list[str] | None = None) -> None:
             qvd = df["q_flight_vel_d_ms"].to_numpy().astype(np.float32)
 
             # Quantized vs Truth — 3D position RMSE & max
-            qt_pos_err = np.sqrt(
-                (qpn - truth_n) ** 2 + (qpe - truth_e) ** 2 + (q_d - truth_d) ** 2
-            )
+            qt_pos_err = np.sqrt((qpn - truth_n) ** 2 + (qpe - truth_e) ** 2 + (q_d - truth_d) ** 2)
             row["quant_pos3d_rmse_m"] = float(np.sqrt(np.mean(qt_pos_err**2)))
             row["quant_pos3d_max_m"] = float(np.max(qt_pos_err))
             row["quant_pos3d_p95_m"] = float(np.percentile(qt_pos_err, 95))
 
             # Quantized vs Truth — 3D velocity RMSE
-            qt_vel_err = np.sqrt(
-                (qvn - truth_vn) ** 2 + (qve - truth_ve) ** 2 + (qvd - truth_vd) ** 2
-            )
+            qt_vel_err = np.sqrt((qvn - truth_vn) ** 2 + (qve - truth_ve) ** 2 + (qvd - truth_vd) ** 2)
             row["quant_vel3d_rmse_ms"] = float(np.sqrt(np.mean(qt_vel_err**2)))
             row["quant_vel3d_max_ms"] = float(np.max(qt_vel_err))
             row["quant_vel3d_p95_ms"] = float(np.percentile(qt_vel_err, 95))
 
             # Quantization-only error (quant round-trip vs ESKF)
-            rt_pos_err = np.sqrt(
-                (qpn - ekf_n) ** 2 + (qpe - ekf_e) ** 2 + (q_d - ekf_d) ** 2
-            )
+            rt_pos_err = np.sqrt((qpn - ekf_n) ** 2 + (qpe - ekf_e) ** 2 + (q_d - ekf_d) ** 2)
             row["quant_rt_pos3d_rmse_m"] = float(np.sqrt(np.mean(rt_pos_err**2)))
             row["quant_rt_pos3d_max_m"] = float(np.max(rt_pos_err))
 
-            rt_vel_err = np.sqrt(
-                (qvn - ekf_vn) ** 2 + (qve - ekf_ve) ** 2 + (qvd - ekf_vd) ** 2
-            )
+            rt_vel_err = np.sqrt((qvn - ekf_vn) ** 2 + (qve - ekf_ve) ** 2 + (qvd - ekf_vd) ** 2)
             row["quant_rt_vel3d_rmse_ms"] = float(np.sqrt(np.mean(rt_vel_err**2)))
             row["quant_rt_vel3d_max_ms"] = float(np.max(rt_vel_err))
 
@@ -667,9 +754,7 @@ def run_cli(argv: list[str] | None = None) -> None:
     flight_cols = ["apogee_m", "max_velocity_ms", "max_accel_ms2", "flight_time_s"]
     eskf_cols = [c for c in summary_df.columns if c.startswith("eskf_")]
     state_cols = [c for c in summary_df.columns if c.startswith("state_")]
-    quant_vs_truth_cols = [
-        c for c in summary_df.columns if c.startswith("quant_") and "_rt_" not in c
-    ]
+    quant_vs_truth_cols = [c for c in summary_df.columns if c.startswith("quant_") and "_rt_" not in c]
     quant_rt_cols = [c for c in summary_df.columns if "_rt_" in c]
 
     def _print_group(title: str, cols: list[str]) -> None:
@@ -680,9 +765,7 @@ def run_cli(argv: list[str] | None = None) -> None:
         print(f"  {'─' * 30} {'─' * 12} {'─' * 12} {'─' * 12} {'─' * 12}")
         for col in cols:
             s = summary_df[col]
-            print(
-                f"  {col:<30s} {s.min():>12.3f} {s.max():>12.3f} {s.mean():>12.3f} {s.std():>12.3f}"
-            )
+            print(f"  {col:<30s} {s.min():>12.3f} {s.max():>12.3f} {s.mean():>12.3f} {s.std():>12.3f}")
 
     print("\n── Sweep Statistics ──")
     _print_group("Flight Parameters", flight_cols)

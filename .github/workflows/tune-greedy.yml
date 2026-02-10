@@ -1,0 +1,161 @@
+name: ESKF Greedy Tuning (Coordinate Descent)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tune_steps:
+        description: "Steps per tuning parameter (log-spaced)"
+        type: number
+        default: 15
+      tune_stages:
+        description: "Stages to sweep (space-separated, default: all)"
+        type: string
+        default: "pad burn coasting recovery"
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Shared build step ───────────────────────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: astral-sh/setup-uv@v6
+      - name: Install project
+        run: uv sync && uv run maturin develop --release
+      - name: Cache installed env
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .venv
+            rust/target
+          key: aloe-greedy-${{ github.sha }}
+
+  # ── Greedy coordinate descent over a matrix of rocket configs ───
+  # Greedy mode is inherently sequential (each param depends on the
+  # previous), so each matrix entry runs the full greedy sweep in one
+  # job. The matrix varies the *rocket* parameters to ensure tuning
+  # is robust across different flight profiles.
+  greedy:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: defaults
+            args: ""
+
+          - name: heavy-low-thrust
+            args: >-
+              --dry-mass 50 --propellant-mass 150 --thrust 4000 --burn-time 20
+              --drag-coeff 0.6 --ref-area 0.06
+
+          - name: light-high-thrust
+            args: >-
+              --dry-mass 10 --propellant-mass 30 --thrust 12000 --burn-time 5
+              --drag-coeff 0.35 --ref-area 0.02
+
+          - name: windy
+            args: >-
+              --wind-speed 15 --wind-speed-z 8 --air-density 1.0
+
+          - name: spin-cant-delay
+            args: >-
+              --launch-delay 5 --spin-rate 720 --thrust-cant 3.0
+
+          - name: long-burn
+            args: >-
+              --dry-mass 25 --propellant-mass 200 --thrust 8000 --burn-time 30
+              --drag-coeff 0.5 --ref-area 0.04
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: astral-sh/setup-uv@v6
+      - name: Restore build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .venv
+            rust/target
+          key: aloe-greedy-${{ github.sha }}
+      - name: Ensure project installed
+        run: uv sync && uv run maturin develop --release
+
+      - name: Greedy tune (${{ matrix.name }})
+        run: |
+          STEPS=${{ inputs.tune_steps || 15 }}
+          STAGES="${{ inputs.tune_stages || 'pad burn coasting recovery' }}"
+          uv run aloe cli \
+            ${{ matrix.args }} \
+            --tune-sweep \
+            --tune-mode greedy \
+            --tune-steps "$STEPS" \
+            --tune-stages $STAGES \
+            -o /tmp/aloe-greedy-${{ matrix.name }}
+
+      - name: Verify outputs
+        run: |
+          ls -la /tmp/aloe-greedy-${{ matrix.name }}/
+          test -e /tmp/aloe-greedy-${{ matrix.name }}/tune_sweep_summary.csv
+          test -e /tmp/aloe-greedy-${{ matrix.name }}/optimised_tuning.json
+          echo "── optimised_tuning.json ──"
+          cat /tmp/aloe-greedy-${{ matrix.name }}/optimised_tuning.json
+          echo ""
+          echo "── tune_sweep_summary.csv (head) ──"
+          head -20 /tmp/aloe-greedy-${{ matrix.name }}/tune_sweep_summary.csv
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: greedy-${{ matrix.name }}
+          path: |
+            /tmp/aloe-greedy-${{ matrix.name }}/tune_sweep_summary.csv
+            /tmp/aloe-greedy-${{ matrix.name }}/optimised_tuning.json
+          retention-days: 30
+
+  # ── Aggregate all greedy results ────────────────────────────────
+  aggregate:
+    needs: greedy
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/greedy-results
+          pattern: greedy-*
+          merge-multiple: false
+
+      - name: Summarise optimised configs
+        run: |
+          echo "── Optimised configs across rocket profiles ──"
+          for dir in /tmp/greedy-results/greedy-*/; do
+            name=$(basename "$dir")
+            json="$dir/optimised_tuning.json"
+            if [ -f "$json" ]; then
+              echo ""
+              echo "=== $name ==="
+              cat "$json"
+            fi
+          done
+
+      - name: Upload combined results
+        uses: actions/upload-artifact@v4
+        with:
+          name: greedy-combined
+          path: /tmp/greedy-results/
+          retention-days: 30

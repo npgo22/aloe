@@ -82,10 +82,8 @@ def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
 
     # State transition markers (truth)
     _state_marker_cfg = [
-        ("truth_ignition_time", "Ignition (truth)", "orange", "diamond"),
         ("truth_burn_time", "Burn (truth)", "red", "diamond"),
         ("truth_coasting_time", "Coasting (truth)", "cyan", "diamond"),
-        ("truth_apogee_time", "Apogee (truth)", "green", "diamond"),
         ("truth_recovery_time", "Recovery (truth)", "purple", "diamond"),
     ]
     for col, label, color, symbol in _state_marker_cfg:
@@ -111,10 +109,8 @@ def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
 
     # State transition markers (ESKF)
     _eskf_marker_cfg = [
-        ("eskf_ignition_time", "Ignition (ESKF)", "darkorange", "square"),
         ("eskf_burn_time", "Burn (ESKF)", "darkred", "square"),
         ("eskf_coasting_time", "Coasting (ESKF)", "darkcyan", "square"),
-        ("eskf_apogee_time", "Apogee (ESKF)", "darkgreen", "square"),
         ("eskf_recovery_time", "Recovery (ESKF)", "indigo", "square"),
     ]
     for col, label, color, symbol in _eskf_marker_cfg:
@@ -175,9 +171,7 @@ def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
         if i > 0 and df["thrust_N"][i - 1] > 0 and thrust == 0:
             thrust_cutoff_idx = i
             break
-    thrust_cutoff_time = (
-        df["time_s"][thrust_cutoff_idx] if thrust_cutoff_idx is not None else None
-    )
+    thrust_cutoff_time = df["time_s"][thrust_cutoff_idx] if thrust_cutoff_idx is not None else None
 
     fig = make_subplots(
         rows=3,
@@ -927,26 +921,18 @@ def index_page():
         if df is None:
             df = full_df["df"] if full_df["df"] is not None else await _run_sim()
         t_max = None
-        if (
-            animate_checkbox is not None
-            and animate_checkbox.value
-            and time_slider is not None
-        ):
+        if animate_checkbox is not None and animate_checkbox.value and time_slider is not None:
             t_max = time_slider.value
 
         # Build figures in a thread so the event loop stays responsive
         def _build_figures():
             figs: dict[str, Any] = {}
             figs["3d"] = create_3d_figure(df, sensor_cfg=sensor_cfg, max_time=t_max)
-            figs["2d"] = create_2d_figures(
-                df, max_time=t_max, launch_delay=params.launch_delay
-            )
+            figs["2d"] = create_2d_figures(df, max_time=t_max, launch_delay=params.launch_delay)
             figs["sensor"] = create_sensor_figures(df, sensor_cfg, max_time=t_max)
             # Always include filter data if available
             if _CAN_FILTER and "eskf_pos_n" in df.columns:
-                figs["filter_error"] = create_filter_error_figure(
-                    df, max_time=t_max, launch_delay=params.launch_delay
-                )
+                figs["filter_error"] = create_filter_error_figure(df, max_time=t_max, launch_delay=params.launch_delay)
                 figs["filter_stats"] = compute_error_report(df)
             return figs
 
@@ -961,9 +947,7 @@ def index_page():
             _update_if_changed(plot_sensor, figs["sensor"], "sensor")
         if "filter_error" in figs:
             if plot_filter_error is not None:
-                _update_if_changed(
-                    plot_filter_error, figs["filter_error"], "filter_error"
-                )
+                _update_if_changed(plot_filter_error, figs["filter_error"], "filter_error")
             if filter_stats_container is not None:
                 filter_stats_container.clear()
                 with filter_stats_container:
@@ -989,9 +973,7 @@ def index_page():
                 else:
                     formatted[k] = v
             rows_data.append(formatted)
-        ui.table(
-            columns=columns, rows=rows_data, title="Filter Error Statistics"
-        ).classes("w-full").props("dense")
+        ui.table(columns=columns, rows=rows_data, title="Filter Error Statistics").classes("w-full").props("dense")
 
     def _debounced_update():
         """Re-run sim + render, debounced so dragging a slider doesn't flood."""
@@ -1068,9 +1050,7 @@ def index_page():
 
         debounce_timer["t"] = ui.timer(0.05, go, once=True)
 
-    def _make_param_setter(
-        attr, target_obj=None, target_attr=None, use_sensor_update=False
-    ):
+    def _make_param_setter(attr, target_obj=None, target_attr=None, use_sensor_update=False):
         """Return a handler that sets an attribute and triggers debounced update."""
         obj = target_obj or params
         real_attr = target_attr or attr
@@ -1133,9 +1113,7 @@ def index_page():
         current_val = kwargs.get("value", 0)
 
         with ui.row().classes("w-full items-center gap-2 mt-1"):
-            ui.label(label_text).classes(
-                "text-xs font-semibold whitespace-nowrap min-w-[7rem]"
-            )
+            ui.label(label_text).classes("text-xs font-semibold whitespace-nowrap min-w-[7rem]")
             s = (
                 ui.slider(**kwargs)
                 .classes("flex-grow")
@@ -1276,15 +1254,11 @@ def index_page():
             else:
                 sidebar_column.style("display: none; width: 0; min-width: 0")
         if toggle_button is not None:
-            toggle_button.props(
-                f"icon={'menu_open' if sidebar_visible['open'] else 'menu'}"
-            )
+            toggle_button.props(f"icon={'menu_open' if sidebar_visible['open'] else 'menu'}")
 
     with ui.row().classes("w-full h-screen items-stretch"):
         # ── Left column — tabbed settings sidebar ─────────────────
-        with ui.column().classes(
-            "w-96 min-w-[22rem] overflow-y-auto p-4 border-r"
-        ) as sidebar_column:
+        with ui.column().classes("w-96 min-w-[22rem] overflow-y-auto p-4 border-r") as sidebar_column:
             ui.label("Aloe").classes("text-2xl font-bold text-center w-full mb-2")
 
             # Preset buttons (always visible at top)
@@ -1295,7 +1269,9 @@ def index_page():
                         ui.button(
                             preset_name,
                             on_click=lambda e, _n=preset_name: _apply_preset(_n),
-                        ).props("dense outline size=sm").classes("text-xs")
+                        ).props(
+                            "dense outline size=sm"
+                        ).classes("text-xs")
 
             # Tabbed panels for different setting categories
             with ui.tabs().classes("w-full") as tabs:
@@ -1328,20 +1304,16 @@ def index_page():
                             step=step,
                             value=getattr(params, attr),
                         )
-                    ui.label("Tip: Set Crosswind Z for lateral drift").classes(
-                        "text-xs text-gray-500 mt-2 italic"
-                    )
+                    ui.label("Tip: Set Crosswind Z for lateral drift").classes("text-xs text-gray-500 mt-2 italic")
 
                 with ui.tab_panel(sensors_tab):
                     ui.label("Sensor Configuration").classes("text-sm font-bold mb-2")
 
                     with ui.row().classes("w-full items-center gap-2 mb-2"):
-                        ui.label("Noise Scale").classes(
-                            "text-xs font-semibold min-w-[7rem]"
+                        ui.label("Noise Scale").classes("text-xs font-semibold min-w-[7rem]")
+                        noise_slider = ui.slider(min=0, max=5, step=0.1, value=sensor_cfg.noise_scale).classes(
+                            "flex-grow"
                         )
-                        noise_slider = ui.slider(
-                            min=0, max=5, step=0.1, value=sensor_cfg.noise_scale
-                        ).classes("flex-grow")
                         noise_input = (
                             ui.number(
                                 value=sensor_cfg.noise_scale,
@@ -1355,9 +1327,7 @@ def index_page():
                         )
 
                         def _set_noise(e):
-                            sensor_cfg.noise_scale = float(
-                                e.args if hasattr(e, "args") else e.value
-                            )
+                            sensor_cfg.noise_scale = float(e.args if hasattr(e, "args") else e.value)
                             noise_input.value = sensor_cfg.noise_scale  # type: ignore
                             _debounced_sensor_update()
 
@@ -1365,9 +1335,7 @@ def index_page():
                         noise_input.on("update:model-value", _set_noise)
 
                     with ui.row().classes("w-full items-center gap-2 mb-2"):
-                        ui.label("RNG Seed").classes(
-                            "text-xs font-semibold min-w-[7rem]"
-                        )
+                        ui.label("RNG Seed").classes("text-xs font-semibold min-w-[7rem]")
                         seed_input = (
                             ui.number(
                                 value=sensor_cfg.seed,
@@ -1381,16 +1349,12 @@ def index_page():
                         )
 
                         def _set_seed(e):
-                            sensor_cfg.seed = int(
-                                e.args if hasattr(e, "args") else e.value
-                            )
+                            sensor_cfg.seed = int(e.args if hasattr(e, "args") else e.value)
                             _debounced_sensor_update()
 
                         seed_input.on("update:model-value", _set_seed)
 
-                    ui.label("Enabled Sensors").classes(
-                        "text-xs font-semibold mt-2 mb-1"
-                    )
+                    ui.label("Enabled Sensors").classes("text-xs font-semibold mt-2 mb-1")
                     sensor_toggles: dict[str, ui.checkbox] = {}
                     sensor_labels = {
                         "bmi088_accel": "BMI088 Accel (±24g)",
@@ -1441,34 +1405,20 @@ def index_page():
                             target_attr=attr,
                             use_sensor_update=True,
                         )
-                    ui.label("Note: Noise is independent per axis").classes(
-                        "text-xs text-gray-500 mt-2 italic"
-                    )
+                    ui.label("Note: Noise is independent per axis").classes("text-xs text-gray-500 mt-2 italic")
 
                 with ui.tab_panel(playback_tab):
                     ui.label("Playback Controls").classes("text-sm font-bold mb-2")
-                    animate_checkbox = ui.checkbox(
-                        "Animate over time", value=False, on_change=on_animate_toggle
-                    )
-                    time_slider = ui.slider(min=0, max=10, step=0.1, value=10).props(
-                        "label"
-                    )
+                    animate_checkbox = ui.checkbox("Animate over time", value=False, on_change=on_animate_toggle)
+                    time_slider = ui.slider(min=0, max=10, step=0.1, value=10).props("label")
                     time_slider.on("update:model-value", on_time_change)
-                    play_button = (
-                        ui.button("▶ Play", on_click=on_play)
-                        .props("color=secondary")
-                        .classes("w-full mt-2")
-                    )
+                    play_button = ui.button("▶ Play", on_click=on_play).props("color=secondary").classes("w-full mt-2")
 
                     ui.separator().classes("my-3")
                     ui.label("Export Data").classes("text-sm font-bold mb-2")
                     with ui.row().classes("w-full gap-2"):
-                        ui.button("Excel", on_click=export_xlsx).props(
-                            "color=primary dense"
-                        ).classes("flex-grow")
-                        ui.button("CSV", on_click=export_csv).props(
-                            "color=primary outline dense"
-                        ).classes("flex-grow")
+                        ui.button("Excel", on_click=export_xlsx).props("color=primary dense").classes("flex-grow")
+                        ui.button("CSV", on_click=export_csv).props("color=primary outline dense").classes("flex-grow")
 
         # ── Right column — charts fill remaining space ────────────
         with ui.column().classes("flex-grow overflow-y-auto p-2 relative"):
@@ -1484,15 +1434,9 @@ def index_page():
             )
 
             df = _run_sim_sync()
-            plot_3d = ui.plotly(create_3d_figure(df, sensor_cfg=sensor_cfg)).classes(
-                "w-full"
-            )
-            plot_2d = ui.plotly(
-                create_2d_figures(df, launch_delay=params.launch_delay)
-            ).classes("w-full")
-            plot_sensor = ui.plotly(create_sensor_figures(df, sensor_cfg)).classes(
-                "w-full"
-            )
+            plot_3d = ui.plotly(create_3d_figure(df, sensor_cfg=sensor_cfg)).classes("w-full")
+            plot_2d = ui.plotly(create_2d_figures(df, launch_delay=params.launch_delay)).classes("w-full")
+            plot_sensor = ui.plotly(create_sensor_figures(df, sensor_cfg)).classes("w-full")
 
             # Filter error plots and stats (always shown if filter ran successfully)
             if _CAN_FILTER and "eskf_pos_n" in df.columns:
@@ -1503,9 +1447,9 @@ def index_page():
                     "Quantized shows telemetry after radio transmission encoding."
                 ).classes("text-xs text-gray-600 mb-4")
 
-                plot_filter_error = ui.plotly(
-                    create_filter_error_figure(df, launch_delay=params.launch_delay)
-                ).classes("w-full")
+                plot_filter_error = ui.plotly(create_filter_error_figure(df, launch_delay=params.launch_delay)).classes(
+                    "w-full"
+                )
 
                 filter_stats_container = ui.column().classes("w-full mt-4")
                 with filter_stats_container:
@@ -1515,9 +1459,9 @@ def index_page():
                 plot_filter_error = None
                 filter_stats_container = None
                 if not _CAN_FILTER:
-                    ui.label(
-                        "⚠ Kalman filter unavailable. Build native extension: maturin develop --release"
-                    ).classes("text-sm text-orange-600 mt-4")
+                    ui.label("⚠ Kalman filter unavailable. Build native extension: maturin develop --release").classes(
+                        "text-sm text-orange-600 mt-4"
+                    )
 
             if time_slider is not None:
                 try:

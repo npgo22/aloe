@@ -14,7 +14,7 @@ on:
       tune_stages:
         description: "Stages to sweep (space-separated, default: all)"
         type: string
-        default: "pad ignition burn coasting apogee recovery"
+        default: "pad burn coasting recovery"
 
 permissions:
   contents: read
@@ -77,9 +77,10 @@ jobs:
       - name: Sweep ${{ matrix.param }}
         run: |
           STEPS=${{ inputs.tune_steps || 15 }}
-          STAGES="${{ inputs.tune_stages || 'pad ignition burn coasting apogee recovery' }}"
+          STAGES="${{ inputs.tune_stages || 'pad burn coasting recovery' }}"
           uv run aloe cli \
             --tune-sweep \
+            --tune-mode oat \
             --tune-steps "$STEPS" \
             --tune-params ${{ matrix.param }} \
             --tune-stages $STAGES \

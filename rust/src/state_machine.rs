@@ -8,11 +8,9 @@
 //! | State       | Description                                           |
 //! |-------------|-------------------------------------------------------|
 //! | `Pad`       | Pre-ignition: sitting on the launch pad               |
-//! | `Ignition`  | Motor ignition detected (large upward acceleration)   |
-//! | `Burn`      | Engine burning (sustained upward acceleration)        |
+//! | `Burn`      | Motor ignition and burn (sustained upward accel)      |
 //! | `Coasting`  | Engine off, ascending with decreasing velocity        |
-//! | `Apogee`    | Reached maximum altitude (vertical velocity ≈ 0)     |
-//! | `Recovery`  | Descending under drag or parachute                   |
+//! | `Recovery`  | Apogee reached, descending under drag or parachute   |
 
 use pyo3::prelude::*;
 
@@ -25,11 +23,9 @@ use pyo3::prelude::*;
 #[repr(u8)]
 pub enum FlightState {
     Pad = 0,
-    Ignition = 1,
-    Burn = 2,
-    Coasting = 3,
-    Apogee = 4,
-    Recovery = 5,
+    Burn = 1,
+    Coasting = 2,
+    Recovery = 3,
 }
 
 impl FlightState {
@@ -37,14 +33,15 @@ impl FlightState {
     pub fn label(self) -> &'static str {
         match self {
             Self::Pad => "pad",
-            Self::Ignition => "ignition",
             Self::Burn => "burn",
             Self::Coasting => "coasting",
-            Self::Apogee => "apogee",
             Self::Recovery => "recovery",
         }
     }
 }
+
+/// Number of flight stages.
+pub const NUM_STAGES: usize = 4;
 
 // ---------------------------------------------------------------------------
 // Thresholds — tuned for typical hobby-rocket flights
@@ -77,8 +74,8 @@ const CONFIRM_SAMPLES: u32 = 3;
 pub struct StateMachine {
     state: FlightState,
     /// Timestamps (seconds) at which each state was first entered.
-    /// Index by FlightState as u8 (0..=5).
-    transition_times: [f32; 6],
+    /// Index by FlightState as u8 (0..=3).
+    transition_times: [f32; NUM_STAGES],
     prev_vel_d: f32,
     confirm_counter: u32,
     pending_state: Option<FlightState>,
@@ -94,7 +91,7 @@ impl StateMachine {
     pub fn new() -> Self {
         Self {
             state: FlightState::Pad,
-            transition_times: [f32::NAN; 6],
+            transition_times: [f32::NAN; NUM_STAGES],
             prev_vel_d: 0.0,
             confirm_counter: 0,
             pending_state: None,
@@ -131,14 +128,10 @@ impl StateMachine {
         let candidate = match self.state {
             FlightState::Pad => {
                 if accel_up > IGNITION_ACCEL_THRESHOLD {
-                    Some(FlightState::Ignition)
+                    Some(FlightState::Burn)
                 } else {
                     None
                 }
-            }
-            FlightState::Ignition => {
-                // Immediate transition to Burn once ignition is confirmed
-                Some(FlightState::Burn)
             }
             FlightState::Burn => {
                 if accel_up < BURN_ACCEL_THRESHOLD {
@@ -150,14 +143,10 @@ impl StateMachine {
             FlightState::Coasting => {
                 // vel_d positive = descending in NED
                 if vel_d > APOGEE_VEL_D_THRESHOLD {
-                    Some(FlightState::Apogee)
+                    Some(FlightState::Recovery)
                 } else {
                     None
                 }
-            }
-            FlightState::Apogee => {
-                // Immediate transition to Recovery
-                Some(FlightState::Recovery)
             }
             FlightState::Recovery => {
                 // Terminal state
@@ -175,10 +164,7 @@ impl StateMachine {
             }
 
             // Ignition→Burn and Apogee→Recovery are instantaneous (1 sample)
-            let needed = match next {
-                FlightState::Burn | FlightState::Recovery => 1,
-                _ => CONFIRM_SAMPLES,
-            };
+            let needed = CONFIRM_SAMPLES;
 
             if self.confirm_counter >= needed {
                 self.state = next;
@@ -205,7 +191,7 @@ impl StateMachine {
     }
 
     /// Get all transition times as an array indexed by state.
-    pub fn transition_times(&self) -> &[f32; 6] {
+    pub fn transition_times(&self) -> &[f32; NUM_STAGES] {
         &self.transition_times
     }
 
@@ -227,8 +213,8 @@ impl StateMachine {
 ///
 /// # Returns
 /// A tuple of:
-/// * `states` — per-sample state (u8, 0..=5)
-/// * `transition_times` — [pad, ignition, burn, coasting, apogee, recovery]
+/// * `states` — per-sample state (u8, 0..=3)
+/// * `transition_times` — [pad, burn, coasting, recovery]
 ///   time in seconds, NaN if not reached
 #[pyfunction]
 pub fn detect_flight_states(
@@ -236,7 +222,7 @@ pub fn detect_flight_states(
     vel_n: Vec<f32>,
     vel_e: Vec<f32>,
     vel_d: Vec<f32>,
-) -> (Vec<u8>, [f32; 6]) {
+) -> (Vec<u8>, [f32; NUM_STAGES]) {
     let n = times_s.len();
     let mut sm = StateMachine::new();
     let mut states = Vec::with_capacity(n);
@@ -261,31 +247,30 @@ pub fn detect_flight_states(
 ///
 /// # Returns
 /// * `states` — per-sample state (u8)
-/// * `transition_times` — [pad, ignition, burn, coasting, apogee, recovery]
+/// * `transition_times` — [pad, burn, coasting, recovery]
 #[pyfunction]
 pub fn detect_truth_states(
     times_s: Vec<f32>,
     _accel_y: Vec<f32>,
     vel_y: Vec<f32>,
     thrust_n: Vec<f32>,
-) -> (Vec<u8>, [f32; 6]) {
+) -> (Vec<u8>, [f32; NUM_STAGES]) {
     let n = times_s.len();
     let mut states = Vec::with_capacity(n);
-    let mut transition_times = [f32::NAN; 6];
+    let mut transition_times = [f32::NAN; NUM_STAGES];
     let mut current_state = FlightState::Pad;
     transition_times[FlightState::Pad as usize] = 0.0;
 
     for i in 0..n {
         let next = match current_state {
             FlightState::Pad => {
-                // Truth ignition: thrust goes positive
+                // Truth ignition: thrust goes positive → enter Burn
                 if thrust_n[i] > 1.0 {
-                    Some(FlightState::Ignition)
+                    Some(FlightState::Burn)
                 } else {
                     None
                 }
             }
-            FlightState::Ignition => Some(FlightState::Burn),
             FlightState::Burn => {
                 // Truth burnout: thrust drops to ~0
                 if thrust_n[i] < 1.0 {
@@ -295,14 +280,13 @@ pub fn detect_truth_states(
                 }
             }
             FlightState::Coasting => {
-                // Truth apogee: velocity_y crosses zero downward
+                // Truth apogee: velocity_y crosses zero downward → enter Recovery
                 if vel_y[i] <= 0.0 {
-                    Some(FlightState::Apogee)
+                    Some(FlightState::Recovery)
                 } else {
                     None
                 }
             }
-            FlightState::Apogee => Some(FlightState::Recovery),
             FlightState::Recovery => None,
         };
 
@@ -328,11 +312,9 @@ pub fn detect_truth_states(
 pub fn state_label(s: u8) -> &'static str {
     match s {
         0 => "pad",
-        1 => "ignition",
-        2 => "burn",
-        3 => "coasting",
-        4 => "apogee",
-        5 => "recovery",
+        1 => "burn",
+        2 => "coasting",
+        3 => "recovery",
         _ => "unknown",
     }
 }

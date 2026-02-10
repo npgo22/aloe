@@ -70,11 +70,11 @@ ESKF_TUNING_PARAMS: dict[str, ParamSpec] = {
 }
 
 # ── Flight stages (indices match Rust FlightState enum) ───────────────
-FLIGHT_STAGES: list[str] = ["pad", "ignition", "burn", "coasting", "apogee", "recovery"]
+FLIGHT_STAGES: list[str] = ["pad", "burn", "coasting", "recovery"]
 NUM_STAGES: int = len(FLIGHT_STAGES)
 
 # ── Per-stage ESKF tuning defaults (must match Rust EskfTuning::default()) ─
-# Each key maps to a list of 6 values: [pad, ignition, burn, coasting, apogee, recovery].
+# Each key maps to a list of 4 values: [pad, burn, coasting, recovery].
 # Initially uniform — tune-sweep discovers per-stage optimal values.
 ESKF_TUNING_DEFAULTS: dict[str, list[float]] = {
     "accel_noise_density": [0.5] * NUM_STAGES,
@@ -96,34 +96,22 @@ ALL_PARAMS = {**ROCKET_PARAMS, **ENV_PARAMS}
 
 def get_rocket_sliders() -> list[tuple[str, str, float, float, float]]:
     """Return rocket parameter sliders in GUI format: (label, attr, min, max, step)."""
-    return [
-        (spec.label, attr, spec.min, spec.max, spec.step)
-        for attr, spec in ROCKET_PARAMS.items()
-    ]
+    return [(spec.label, attr, spec.min, spec.max, spec.step) for attr, spec in ROCKET_PARAMS.items()]
 
 
 def get_env_sliders() -> list[tuple[str, str, float, float, float]]:
     """Return environment parameter sliders in GUI format: (label, attr, min, max, step)."""
-    return [
-        (spec.label, attr, spec.min, spec.max, spec.step)
-        for attr, spec in ENV_PARAMS.items()
-    ]
+    return [(spec.label, attr, spec.min, spec.max, spec.step) for attr, spec in ENV_PARAMS.items()]
 
 
 def get_sensor_rate_sliders() -> list[tuple[str, str, float, float, float]]:
     """Return sensor rate sliders in GUI format: (label, attr, min, max, step)."""
-    return [
-        (spec.label, attr, spec.min, spec.max, spec.step)
-        for attr, spec in SENSOR_RATE_PARAMS.items()
-    ]
+    return [(spec.label, attr, spec.min, spec.max, spec.step) for attr, spec in SENSOR_RATE_PARAMS.items()]
 
 
 def get_sensor_latency_sliders() -> list[tuple[str, str, float, float, float]]:
     """Return sensor latency sliders in GUI format: (label, attr, min, max, step)."""
-    return [
-        (spec.label, attr, spec.min, spec.max, spec.step)
-        for attr, spec in SENSOR_LATENCY_PARAMS.items()
-    ]
+    return [(spec.label, attr, spec.min, spec.max, spec.step) for attr, spec in SENSOR_LATENCY_PARAMS.items()]
 
 
 # ── Helper functions for CLI ──────────────────────────────────────────
