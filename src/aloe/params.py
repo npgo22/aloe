@@ -57,16 +57,17 @@ SENSOR_LATENCY_PARAMS: dict[str, ParamSpec] = {
 
 # ── ESKF tuning parameters ────────────────────────────────────────────
 # Each value sweeps logarithmically from min to max.
+# Extended ranges based on greedy tuning results showing optimal values at boundaries.
 ESKF_TUNING_PARAMS: dict[str, ParamSpec] = {
-    "accel_noise_density": ParamSpec("Accel Noise (m/s²/√Hz)", 0.01, 5.0, 0.1),
-    "gyro_noise_density": ParamSpec("Gyro Noise (rad/s/√Hz)", 0.0001, 0.1, 0.001),
-    "accel_bias_instability": ParamSpec("Accel Bias Inst.", 1e-6, 1e-2, 1e-5),
-    "gyro_bias_instability": ParamSpec("Gyro Bias Inst.", 1e-7, 1e-3, 1e-6),
-    "pos_process_noise": ParamSpec("Pos Proc Noise (m/√s)", 0.001, 1.0, 0.01),
-    "r_gps_pos": ParamSpec("R GPS Pos (m²)", 0.1, 100.0, 1.0),
-    "r_gps_vel": ParamSpec("R GPS Vel ((m/s)²)", 0.01, 10.0, 0.05),
-    "r_baro": ParamSpec("R Baro (m²)", 0.1, 50.0, 0.5),
-    "r_mag": ParamSpec("R Mag", 0.001, 1.0, 0.01),
+    "accel_noise_density": ParamSpec("Accel Noise (m/s²/√Hz)", 0.001, 20.0, 0.1),
+    "gyro_noise_density": ParamSpec("Gyro Noise (rad/s/√Hz)", 0.00001, 0.5, 0.001),
+    "accel_bias_instability": ParamSpec("Accel Bias Inst.", 1e-8, 1e-2, 1e-5),
+    "gyro_bias_instability": ParamSpec("Gyro Bias Inst.", 1e-8, 0.01, 1e-6),
+    "pos_process_noise": ParamSpec("Pos Proc Noise (m/√s)", 0.0001, 10.0, 0.01),
+    "r_gps_pos": ParamSpec("R GPS Pos (m²)", 0.01, 500.0, 1.0),
+    "r_gps_vel": ParamSpec("R GPS Vel ((m/s)²)", 0.001, 100.0, 0.05),
+    "r_baro": ParamSpec("R Baro (m²)", 0.001, 200.0, 0.5),
+    "r_mag": ParamSpec("R Mag", 0.0001, 10.0, 0.01),
 }
 
 # ── Flight stages (indices match Rust FlightState enum) ───────────────

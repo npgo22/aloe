@@ -1415,7 +1415,7 @@ def index_page():
 
                     with ui.row().classes("w-full items-center gap-2 mb-2"):
                         ui.label("Noise Scale").classes("text-xs font-semibold min-w-[7rem]")
-                        noise_slider = ui.slider(min=0, max=5, step=0.1, value=sensor_cfg.noise_scale).classes(
+                        noise_slider = ui.slider(min=0, max=32, step=0.1, value=sensor_cfg.noise_scale).classes(
                             "flex-grow"
                         )
                         noise_input = (

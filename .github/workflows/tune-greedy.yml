@@ -10,7 +10,7 @@ on:
       tune_steps:
         description: "Steps per tuning parameter (log-spaced)"
         type: number
-        default: 45
+        default: 450
       tune_stages:
         description: "Stages to sweep (space-separated, default: all)"
         type: string
@@ -40,43 +40,49 @@ jobs:
             rust/target
           key: aloe-greedy-${{ github.sha }}
 
-  # ── Greedy coordinate descent over a matrix of rocket configs ───
-  # Greedy mode is inherently sequential (each param depends on the
-  # previous), so each matrix entry runs the full greedy sweep in one
-  # job. The matrix varies the *rocket* parameters to ensure tuning
-  # is robust across different flight profiles.
+  # ── Greedy coordinate descent with parallel matrix ───────────────
+  # Matrix runs in parallel across:
+  # - 8 rocket configurations
+  # - 6 noise scales (1, 2, 4, 8, 16, 32)
+  # - 3 seeds (42, 69, 23)
+  # Total: 144 parallel jobs
   greedy:
     needs: build
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
+        rocket:
           - name: defaults
             args: ""
-
+          - name: 12km-preset
+            args: >-
+              --dry-mass 30 --propellant-mass 60 --thrust 6000 --burn-time 12
+              --drag-coeff 0.45 --ref-area 0.0324 --wind-speed 5 --wind-speed-z 2
+          - name: 30km-preset
+            args: >-
+              --dry-mass 50 --propellant-mass 150 --thrust 15000 --burn-time 25
+              --drag-coeff 0.40 --ref-area 0.0324 --wind-speed 3 --wind-speed-z 0
           - name: heavy-low-thrust
             args: >-
               --dry-mass 50 --propellant-mass 150 --thrust 4000 --burn-time 20
               --drag-coeff 0.6 --ref-area 0.06
-
           - name: light-high-thrust
             args: >-
               --dry-mass 10 --propellant-mass 30 --thrust 12000 --burn-time 5
               --drag-coeff 0.35 --ref-area 0.02
-
           - name: windy
             args: >-
               --wind-speed 15 --wind-speed-z 8 --air-density 1.0
-
           - name: spin-cant-delay
             args: >-
               --launch-delay 5 --spin-rate 720 --thrust-cant 3.0
-
           - name: long-burn
             args: >-
               --dry-mass 25 --propellant-mass 200 --thrust 8000 --burn-time 30
               --drag-coeff 0.5 --ref-area 0.04
+        noise_scale: [1, 2, 4, 8, 16, 32]
+        seed: [42, 69, 23]
 
     steps:
       - uses: actions/checkout@v4
@@ -95,38 +101,41 @@ jobs:
       - name: Ensure project installed
         run: uv sync && uv run maturin develop --release
 
-      - name: Greedy tune (${{ matrix.name }})
+      - name: Greedy tune (${{ matrix.rocket.name }}, noise=${{ matrix.noise_scale }}, seed=${{ matrix.seed }})
         run: |
-          STEPS=${{ inputs.tune_steps || 45 }}
+          STEPS=${{ inputs.tune_steps || 450 }}
           STAGES="${{ inputs.tune_stages || 'pad burn coasting recovery' }}"
           uv run aloe cli \
-            ${{ matrix.args }} \
+            ${{ matrix.rocket.args }} \
             --tune-sweep \
             --tune-mode greedy \
             --tune-steps "$STEPS" \
             --tune-stages $STAGES \
             --sensor-failure-test \
-            -o /tmp/aloe-greedy-${{ matrix.name }}
+            --tune-noise-scales ${{ matrix.noise_scale }} \
+            --tune-seeds ${{ matrix.seed }} \
+            -o /tmp/aloe-greedy-${{ matrix.rocket.name }}-noise${{ matrix.noise_scale }}-seed${{ matrix.seed }}
 
       - name: Verify outputs
         run: |
-          ls -la /tmp/aloe-greedy-${{ matrix.name }}/
-          test -e /tmp/aloe-greedy-${{ matrix.name }}/tune_sweep_summary.csv
-          test -e /tmp/aloe-greedy-${{ matrix.name }}/optimised_tuning.json
+          OUTDIR="/tmp/aloe-greedy-${{ matrix.rocket.name }}-noise${{ matrix.noise_scale }}-seed${{ matrix.seed }}"
+          ls -la "$OUTDIR/"
+          test -e "$OUTDIR/tune_sweep_summary.csv"
+          test -e "$OUTDIR/optimised_tuning.json"
           echo "── optimised_tuning.json ──"
-          cat /tmp/aloe-greedy-${{ matrix.name }}/optimised_tuning.json
+          cat "$OUTDIR/optimised_tuning.json"
           echo ""
           echo "── tune_sweep_summary.csv (head) ──"
-          head -20 /tmp/aloe-greedy-${{ matrix.name }}/tune_sweep_summary.csv
+          head -20 "$OUTDIR/tune_sweep_summary.csv"
 
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: greedy-${{ matrix.name }}
+          name: greedy-${{ matrix.rocket.name }}-noise${{ matrix.noise_scale }}-seed${{ matrix.seed }}
           path: |
-            /tmp/aloe-greedy-${{ matrix.name }}/tune_sweep_summary.csv
-            /tmp/aloe-greedy-${{ matrix.name }}/optimised_tuning.json
+            /tmp/aloe-greedy-${{ matrix.rocket.name }}-noise${{ matrix.noise_scale }}-seed${{ matrix.seed }}/tune_sweep_summary.csv
+            /tmp/aloe-greedy-${{ matrix.rocket.name }}-noise${{ matrix.noise_scale }}-seed${{ matrix.seed }}/optimised_tuning.json
           retention-days: 30
 
   # ── Aggregate all greedy results ────────────────────────────────
@@ -143,16 +152,64 @@ jobs:
 
       - name: Summarise optimised configs
         run: |
-          echo "── Optimised configs across rocket profiles ──"
-          for dir in /tmp/greedy-results/greedy-*/; do
-            name=$(basename "$dir")
-            json="$dir/optimised_tuning.json"
-            if [ -f "$json" ]; then
-              echo ""
-              echo "=== $name ==="
-              cat "$json"
-            fi
+          echo "── Optimised configs across all matrix combinations ──"
+          echo ""
+          echo "Matrix dimensions:"
+          echo "  - 8 rocket configurations"
+          echo "  - 6 noise scales (1, 2, 4, 8, 16, 32)"
+          echo "  - 3 seeds (42, 69, 23)"
+          echo "  - Total: 144 parallel tuning runs"
+          echo ""
+          
+          # Group by rocket config and show stats
+          for rocket_name in defaults 12km-preset 30km-preset heavy-low-thrust light-high-thrust windy spin-cant-delay long-burn; do
+            echo "=== $rocket_name ==="
+            
+            # Find all results for this rocket
+            count=$(find /tmp/greedy-results -name "greedy-${rocket_name}-noise*-seed*" -type d | wc -l)
+            echo "  Parallel runs: $count"
+            
+            # Show best RMSE for each noise/seed combination
+            echo "  Best RMSE per condition:"
+            for dir in /tmp/greedy-results/greedy-${rocket_name}-noise*-seed*/; do
+              if [ -f "$dir/optimised_tuning.json" ]; then
+                # Extract noise and seed from directory name
+                basename_dir=$(basename "$dir")
+                noise=$(echo "$basename_dir" | grep -o 'noise[0-9]*' | sed 's/noise//')
+                seed=$(echo "$basename_dir" | grep -o 'seed[0-9]*' | sed 's/seed//')
+                
+                # Get RMSE from summary CSV (last line, pos3d_rmse_m column)
+                if [ -f "$dir/tune_sweep_summary.csv" ]; then
+                  rmse=$(tail -1 "$dir/tune_sweep_summary.csv" | cut -d',' -f4)
+                  echo "    noise=$noise, seed=$seed: ${rmse}m"
+                fi
+              fi
+            done
+            echo ""
           done
+
+      - name: Combine all CSVs
+        run: |
+          echo "── Combining all tune_sweep_summary.csv files ──"
+          
+          # Find the first CSV to get headers
+          first_csv=$(find /tmp/greedy-results -name "tune_sweep_summary.csv" | head -1)
+          
+          if [ -n "$first_csv" ]; then
+            # Create combined CSV with headers
+            head -1 "$first_csv" > /tmp/greedy-results/combined_summary.csv
+            
+            # Append all CSVs (skipping headers)
+            for csv in /tmp/greedy-results/greedy-*/tune_sweep_summary.csv; do
+              tail -n +2 "$csv" >> /tmp/greedy-results/combined_summary.csv
+            done
+            
+            echo "Combined $(find /tmp/greedy-results -name "tune_sweep_summary.csv" | wc -l) CSV files"
+            echo "Total rows: $(wc -l < /tmp/greedy-results/combined_summary.csv)"
+            echo ""
+            echo "Head of combined CSV:"
+            head -20 /tmp/greedy-results/combined_summary.csv
+          fi
 
       - name: Upload combined results
         uses: actions/upload-artifact@v4

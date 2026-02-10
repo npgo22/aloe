@@ -186,6 +186,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Test tuning under various sensor failure scenarios (IMU lost, GPS lost, baro lost, etc.)",
     )
     p.add_argument(
+        "--tune-noise-scales",
+        nargs="*",
+        type=float,
+        default=[1.0],
+        help="Noise scale factors for robustness testing (default: 1.0). " "Example: --tune-noise-scales 1 2 4 8 16 32",
+    )
+    p.add_argument(
+        "--tune-seeds",
+        nargs="*",
+        type=int,
+        default=[42],
+        help="Random seeds for sensor noise generation (default: 42). " "Example: --tune-seeds 42 69 23",
+    )
+    p.add_argument(
         "--mag-declination",
         type=float,
         default=0.0,
@@ -457,16 +471,21 @@ def run_cli(argv: list[str] | None = None) -> None:
             n_dims = len(tune_names) * len(tune_stage_names)
             total = n_dims * steps
 
+            # Generate all noise_scale × seed combinations
+            noise_seed_combinations = [
+                (noise_scale, seed) for noise_scale in args.tune_noise_scales for seed in args.tune_seeds
+            ]
+
             if args.sensor_failure_test:
                 print(
-                    f"Robust greedy tune: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps × {len(FAILURE_SCENARIOS)} scenarios "
-                    f"= {total * len(FAILURE_SCENARIOS)} total evaluations"
+                    f"Robust greedy tune: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps × {len(FAILURE_SCENARIOS)} scenarios × {len(noise_seed_combinations)} (noise, seed) combos "
+                    f"= {total * len(FAILURE_SCENARIOS) * len(noise_seed_combinations)} total evaluations"
                 )
-                print("  Optimizing for worst-case RMSE across all sensor failure scenarios")
+                print("  Optimizing for worst-case RMSE across all sensor failure scenarios and noise conditions")
             else:
                 print(
-                    f"Greedy tune: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps "
-                    f"= {total} evaluations (sequential coordinate descent)"
+                    f"Greedy tune: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps × {len(noise_seed_combinations)} (noise, seed) combos "
+                    f"= {total * len(noise_seed_combinations)} evaluations (sequential coordinate descent)"
                 )
 
             if args.sensor_failure_test:
@@ -558,9 +577,34 @@ def run_cli(argv: list[str] | None = None) -> None:
                     print(f"\n  → Using all_sensors optimized config (RMSE: {current_rmse:.4f} m)")
 
             else:
-                # ── Standard greedy coordinate descent (single scenario) ───
+                # ── Standard greedy coordinate descent with noise/seed matrix ───
+                # Generate dataframes for all noise_scale × seed combinations
+                print(f"\n── Generating data for {len(noise_seed_combinations)} (noise_scale, seed) combinations ──")
+                noise_seed_dataframes: dict[tuple[float, int], pl.DataFrame] = {}
+                for noise_scale, seed in noise_seed_combinations:
+                    test_sensor_cfg = SensorConfig(
+                        noise_scale=noise_scale,
+                        seed=seed,
+                    )
+                    test_df = simulate_rocket(base_params)
+                    if not args.no_sensors:
+                        test_df = add_sensor_data(test_df, test_sensor_cfg)
+                    noise_seed_dataframes[(noise_scale, seed)] = test_df
+                    print(f"  Generated noise_scale={noise_scale}, seed={seed}")
+
+                # Start greedy optimization
                 current_best = {tname: list(ESKF_TUNING_DEFAULTS[tname]) for tname in ESKF_TUNING_DEFAULTS}
-                current_rmse = baseline_rmse
+
+                # Compute baseline RMSE across all noise/seed combinations
+                baseline_cfg = _build_filter_cfg()
+                baseline_rmses = []
+                for (noise_scale, seed), test_df in noise_seed_dataframes.items():
+                    baseline_test_df = run_filter_pipeline(test_df, baseline_cfg)
+                    baseline_test_metrics = _compute_tune_metrics(baseline_test_df)
+                    baseline_rmse = baseline_test_metrics.get("pos3d_rmse_m", float("inf"))
+                    baseline_rmses.append(baseline_rmse)
+                current_rmse = max(baseline_rmses)  # Use worst-case across all conditions
+                print(f"\n  Baseline worst-case RMSE across all conditions: {current_rmse:.4f} m")
 
                 for tname in tune_names:
                     spec = ESKF_TUNING_PARAMS[tname]
@@ -578,17 +622,30 @@ def run_cli(argv: list[str] | None = None) -> None:
                             trial[tname][stage_idx] = val
                             fcfg = _build_filter_cfg(**trial)
 
-                            df = run_filter_pipeline(base_df, fcfg)
-                            metrics = _compute_tune_metrics(df)
-                            rmse = metrics.get("pos3d_rmse_m", float("inf"))
+                            # Evaluate on ALL noise_scale × seed combinations
+                            # Use worst-case (max) RMSE across all conditions
+                            test_rmses = []
+                            for (
+                                noise_scale,
+                                seed,
+                            ), test_df in noise_seed_dataframes.items():
+                                test_filtered_df = run_filter_pipeline(test_df, fcfg)
+                                test_metrics = _compute_tune_metrics(test_filtered_df)
+                                test_rmse = test_metrics.get("pos3d_rmse_m", float("inf"))
+                                test_rmses.append(test_rmse)
 
-                            trow = {
-                                "tuning_param": tname,
-                                "stage": stage_name,
-                                "value": val,
-                                **metrics,
-                            }
-                            tune_summary_rows.append(trow)
+                                # Log each combination
+                                trow = {
+                                    "tuning_param": tname,
+                                    "stage": stage_name,
+                                    "value": val,
+                                    "noise_scale": noise_scale,
+                                    "seed": seed,
+                                    **test_metrics,
+                                }
+                                tune_summary_rows.append(trow)
+
+                            rmse = max(test_rmses)  # Worst-case across all conditions
 
                             marker = ""
                             if rmse < best_rmse_for_dim:
@@ -598,7 +655,7 @@ def run_cli(argv: list[str] | None = None) -> None:
 
                             print(
                                 f"  [{run_idx}/{total}] {tname}/{stage_name}={val:.6g}  "
-                                f"pos3d_rmse={rmse:.4f}{marker}"
+                                f"worst_rmse={rmse:.4f}{marker}"
                             )
 
                         # Lock in this dimension's best
@@ -606,7 +663,7 @@ def run_cli(argv: list[str] | None = None) -> None:
                         current_rmse = best_rmse_for_dim
                         print(
                             f"  → locked {tname}/{stage_name} = {best_val_for_dim:.6g}  "
-                            f"(cumulative rmse = {current_rmse:.4f})"
+                            f"(cumulative worst_rmse = {current_rmse:.4f})"
                         )
 
         else:
@@ -687,15 +744,34 @@ def run_cli(argv: list[str] | None = None) -> None:
         if mode == "greedy" and current_best is not None:
             print("\n── Greedy result: baseline vs optimised ──")
             final_cfg = _build_filter_cfg(**current_best)
-            final_df = run_filter_pipeline(base_df, final_cfg)
-            final_metrics = _compute_tune_metrics(final_df)
-            final_rmse = final_metrics.get("pos3d_rmse_m", float("inf"))
 
-            pct = (baseline_rmse - final_rmse) / baseline_rmse * 100 if baseline_rmse > 0 else 0
-            print(f"  Baseline  pos3d_rmse = {baseline_rmse:.4f} m")
+            # Compute final RMSE across all noise/seed combinations
+            if len(noise_seed_combinations) > 1:
+                # Multi-condition mode: use noise_seed_dataframes
+                final_rmses = []
+                for (noise_scale, seed), test_df in noise_seed_dataframes.items():
+                    final_test_df = run_filter_pipeline(test_df, final_cfg)
+                    final_test_metrics = _compute_tune_metrics(final_test_df)
+                    final_test_rmse = final_test_metrics.get("pos3d_rmse_m", float("inf"))
+                    final_rmses.append(final_test_rmse)
+                final_rmse = max(final_rmses)
+                baseline_for_comparison = max(baseline_rmses) if "baseline_rmses" in dir() else baseline_rmse
+            else:
+                # Single condition mode
+                final_df = run_filter_pipeline(base_df, final_cfg)
+                final_metrics = _compute_tune_metrics(final_df)
+                final_rmse = final_metrics.get("pos3d_rmse_m", float("inf"))
+                baseline_for_comparison = baseline_rmse
+
+            pct = (
+                (baseline_for_comparison - final_rmse) / baseline_for_comparison * 100
+                if baseline_for_comparison > 0
+                else 0
+            )
+            print(f"  Baseline  pos3d_rmse = {baseline_for_comparison:.4f} m")
             print(f"  Optimised pos3d_rmse = {final_rmse:.4f} m  ({pct:+.1f}%)")
-            print(f"  Baseline  vel3d_rmse = {baseline_metrics.get('vel3d_rmse_ms', 0):.4f} m/s")
-            print(f"  Optimised vel3d_rmse = {final_metrics.get('vel3d_rmse_ms', 0):.4f} m/s")
+            if len(noise_seed_combinations) > 1:
+                print(f"  (Worst-case across {len(noise_seed_combinations)} noise/seed combinations)")
 
             # Print the final optimised config
             print("\n  Optimised per-stage config:")
