@@ -19,10 +19,13 @@ from aloe.params import (
     get_env_sliders,
     get_sensor_rate_sliders,
     get_sensor_latency_sliders,
+    ESKF_TUNING_PARAMS,
+    ESKF_TUNING_DEFAULTS,
+    FLIGHT_STAGES,
 )
 
 try:
-    from aloe.filter import run_filter_pipeline, compute_error_report, _HAS_NATIVE
+    from aloe.filter import run_filter_pipeline, compute_error_report, FilterConfig, _HAS_NATIVE
 
     _CAN_FILTER = _HAS_NATIVE
 except Exception:
@@ -887,6 +890,7 @@ def _update_if_changed(plot_element, fig, cache_key: str):
 def index_page():
     params = RocketParams()
     sensor_cfg = SensorConfig()
+    filter_cfg = FilterConfig() if _CAN_FILTER else None
     timer_ref: dict[str, ui.timer | None] = {"timer": None}
     full_df: dict[str, Any] = {"df": None}
     debounce_timer: dict[str, ui.timer | None] = {"t": None}
@@ -909,7 +913,7 @@ def index_page():
         df = add_sensor_data(df, sensor_cfg)
         # Always run filter if available
         if _CAN_FILTER:
-            df = run_filter_pipeline(df)
+            df = run_filter_pipeline(df, cfg=filter_cfg)
         full_df["df"] = df
         return df
 
@@ -1042,7 +1046,7 @@ def index_page():
                     df = add_sensor_data(base_df, sensor_cfg)
                     # Re-run filter so ESKF/state columns reflect new sensor config
                     if _CAN_FILTER:
-                        df = run_filter_pipeline(df)
+                        df = run_filter_pipeline(df, cfg=filter_cfg)
                     return df
 
                 full_df["df"] = await run.io_bound(_regen_sensors)
@@ -1278,6 +1282,8 @@ def index_page():
                 rocket_tab = ui.tab("Rocket")
                 env_tab = ui.tab("Env")
                 sensors_tab = ui.tab("Sensors")
+                if _CAN_FILTER:
+                    filter_tab = ui.tab("Filter")
                 playback_tab = ui.tab("Playback")
 
             with ui.tab_panels(tabs, value=rocket_tab).classes("w-full"):
@@ -1407,6 +1413,69 @@ def index_page():
                         )
                     ui.label("Note: Noise is independent per axis").classes("text-xs text-gray-500 mt-2 italic")
 
+                if _CAN_FILTER:
+                    with ui.tab_panel(filter_tab):
+                        ui.label("ESKF Tuning (per stage)").classes("text-sm font-bold mb-2")
+                        ui.label(
+                            "Adjust noise / measurement parameters for each flight stage. " "Values are log-scaled."
+                        ).classes("text-xs text-gray-500 mb-2")
+
+                        import math as _math
+
+                        def _make_filter_setter(param_key: str, stage_idx: int):
+                            """Return a handler that updates one stage of a FilterConfig param."""
+
+                            def handler(e):
+                                log_val = float(e.args if hasattr(e, "args") else e.value)
+                                real_val = 10.0**log_val
+                                arr = getattr(filter_cfg, param_key)
+                                arr[stage_idx] = real_val
+                                # Update the display label
+                                lbl_key = f"filter_{param_key}_{stage_idx}"
+                                if lbl_key in value_labels:
+                                    value_labels[lbl_key].set_text(f"{real_val:.3g}")  # type: ignore
+                                _debounced_sensor_update()
+
+                            return handler
+
+                        for param_key, spec in ESKF_TUNING_PARAMS.items():
+                            with ui.expansion(spec.label, icon="tune").classes("w-full"):
+                                log_min = _math.log10(spec.min)
+                                log_max = _math.log10(spec.max)
+                                log_step = (log_max - log_min) / 100.0
+                                for si, stage in enumerate(FLIGHT_STAGES):
+                                    cur_val = getattr(filter_cfg, param_key)[si]
+                                    cur_log = _math.log10(max(cur_val, spec.min))
+                                    with ui.row().classes("w-full items-center gap-1"):
+                                        ui.label(stage.capitalize()).classes("text-xs font-semibold min-w-[5rem]")
+                                        ui.slider(
+                                            min=log_min,
+                                            max=log_max,
+                                            step=log_step,
+                                            value=cur_log,
+                                        ).classes("flex-grow").on(
+                                            "update:model-value",
+                                            _make_filter_setter(param_key, si),
+                                        )
+                                        lbl = ui.label(f"{cur_val:.3g}").classes("text-xs w-16 text-right font-mono")
+                                        value_labels[f"filter_{param_key}_{si}"] = lbl
+
+                        ui.separator().classes("my-2")
+
+                        def _reset_filter_defaults():
+                            """Reset all ESKF tuning to optimised defaults."""
+                            for pk in ESKF_TUNING_DEFAULTS:
+                                setattr(filter_cfg, pk, list(ESKF_TUNING_DEFAULTS[pk]))
+                                for si in range(len(FLIGHT_STAGES)):
+                                    lbl_key = f"filter_{pk}_{si}"
+                                    if lbl_key in value_labels:
+                                        value_labels[lbl_key].set_text(f"{ESKF_TUNING_DEFAULTS[pk][si]:.3g}")  # type: ignore
+                            _debounced_sensor_update()
+
+                        ui.button("Reset to Defaults", on_click=_reset_filter_defaults).props(
+                            "dense outline size=sm"
+                        ).classes("w-full")
+
                 with ui.tab_panel(playback_tab):
                     ui.label("Playback Controls").classes("text-sm font-bold mb-2")
                     animate_checkbox = ui.checkbox("Animate over time", value=False, on_change=on_animate_toggle)
@@ -1433,13 +1502,13 @@ def index_page():
                 .style("box-shadow: 0 2px 8px rgba(0,0,0,0.3)")
             )
 
-            df = _run_sim_sync()
-            plot_3d = ui.plotly(create_3d_figure(df, sensor_cfg=sensor_cfg)).classes("w-full")
-            plot_2d = ui.plotly(create_2d_figures(df, launch_delay=params.launch_delay)).classes("w-full")
-            plot_sensor = ui.plotly(create_sensor_figures(df, sensor_cfg)).classes("w-full")
+            # -- Create empty placeholder plots (render async below) --
+            plot_3d = ui.plotly(go.Figure()).classes("w-full")
+            plot_2d = ui.plotly(go.Figure()).classes("w-full")
+            plot_sensor = ui.plotly(go.Figure()).classes("w-full")
 
-            # Filter error plots and stats (always shown if filter ran successfully)
-            if _CAN_FILTER and "eskf_pos_n" in df.columns:
+            # Filter error plots and stats (always shown if filter available)
+            if _CAN_FILTER:
                 ui.separator().classes("my-4")
                 ui.label("Kalman Filter Performance").classes("text-lg font-bold mb-2")
                 ui.label(
@@ -1447,28 +1516,29 @@ def index_page():
                     "Quantized shows telemetry after radio transmission encoding."
                 ).classes("text-xs text-gray-600 mb-4")
 
-                plot_filter_error = ui.plotly(create_filter_error_figure(df, launch_delay=params.launch_delay)).classes(
-                    "w-full"
-                )
+                plot_filter_error = ui.plotly(go.Figure()).classes("w-full")
 
                 filter_stats_container = ui.column().classes("w-full mt-4")
-                with filter_stats_container:
-                    err_df = compute_error_report(df)
-                    _render_error_table(err_df)
             else:
                 plot_filter_error = None
                 filter_stats_container = None
-                if not _CAN_FILTER:
-                    ui.label("⚠ Kalman filter unavailable. Build native extension: maturin develop --release").classes(
-                        "text-sm text-orange-600 mt-4"
-                    )
+                ui.label("⚠ Kalman filter unavailable. Build native extension: maturin develop --release").classes(
+                    "text-sm text-orange-600 mt-4"
+                )
 
-            if time_slider is not None:
-                try:
-                    max_time = df["time_s"].max()
-                    if max_time is not None:
-                        time_slider._props["max"] = round(float(max_time), 2)  # type: ignore
-                        time_slider._props["value"] = time_slider._props["max"]
-                        time_slider.update()
-                except (TypeError, ValueError):
-                    pass  # Skip if conversion fails
+            # -- Kick off the first sim + render asynchronously so the page
+            #    loads immediately and the WebSocket stays alive. --
+            async def _initial_load():
+                await _run_sim()
+                if time_slider is not None and full_df["df"] is not None:
+                    try:
+                        max_time = full_df["df"]["time_s"].max()
+                        if max_time is not None:
+                            time_slider._props["max"] = round(float(max_time), 2)
+                            time_slider._props["value"] = time_slider._props["max"]
+                            time_slider.update()
+                    except (TypeError, ValueError):
+                        pass
+                await _render()
+
+            ui.timer(0.1, _initial_load, once=True)

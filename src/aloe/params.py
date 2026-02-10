@@ -75,17 +75,17 @@ NUM_STAGES: int = len(FLIGHT_STAGES)
 
 # ── Per-stage ESKF tuning defaults (must match Rust EskfTuning::default()) ─
 # Each key maps to a list of 4 values: [pad, burn, coasting, recovery].
-# Initially uniform — tune-sweep discovers per-stage optimal values.
+# Optimised via greedy sweep on the 30 km (default) rocket profile.
 ESKF_TUNING_DEFAULTS: dict[str, list[float]] = {
-    "accel_noise_density": [0.5] * NUM_STAGES,
-    "gyro_noise_density": [0.005] * NUM_STAGES,
-    "accel_bias_instability": [1e-4] * NUM_STAGES,
-    "gyro_bias_instability": [1e-5] * NUM_STAGES,
-    "pos_process_noise": [0.1] * NUM_STAGES,
-    "r_gps_pos": [9.0] * NUM_STAGES,
-    "r_gps_vel": [0.25] * NUM_STAGES,
-    "r_baro": [4.0] * NUM_STAGES,
-    "r_mag": [0.05] * NUM_STAGES,
+    "accel_noise_density": [0.2236, 0.02430, 0.01, 0.01],
+    "gyro_noise_density": [0.03728, 0.01389, 0.1, 0.01389],
+    "accel_bias_instability": [0.01, 0.002683, 1e-6, 1e-6],
+    "gyro_bias_instability": [3.728e-5, 1e-5, 1e-7, 1e-3],
+    "pos_process_noise": [1.0, 0.1389, 0.004394, 0.007197],
+    "r_gps_pos": [61.05, 0.1, 0.1, 0.1],
+    "r_gps_vel": [0.07197, 0.04394, 0.04394, 0.01],
+    "r_baro": [0.1, 2.236, 50.0, 50.0],
+    "r_mag": [1.0, 0.01179, 1.0, 0.002683],
 }
 # ── Combined parameter definitions ────────────────────────────────────
 # All parameters that can be swept/configured
