@@ -1,6 +1,6 @@
 # Aloe
 
-A flight simulator with "A 15-state Error-State Kalman Filter featuring stage-conditioned parameter adaptation via greedy coordinate descent, Mahalanobis-distance innovation gating for fault detection, ISA-76 Standard Atmosphere modeling for high-altitude barometric compensation, and robust multi-sensor fusion capable of operating in GPS-denied, IMU-degraded, or barometer-only configurations" and telemetry quantization. Python + Rust (via maturin/PyO3).
+A flight simulator with "A 15-state Error-State Kalman Filter featuring stage-conditioned parameter adaptation via greedy coordinate descent, Mahalanobis-distance innovation gating for fault detection, ISA-76 Standard Atmosphere modeling for high-altitude barometric compensation, and robust multi-sensor fusion capable of operating in GPS-denied, IMU-degraded, or barometer-only configurations" complete with telemetry quantization. Python + Rust (via maturin/PyO3).
 
 ## Quick Start
 
@@ -177,3 +177,4 @@ python3 gen_lut.py   # writes rust/src/lut_data.rs
 * Add implementations for other sensor fusion algorithms
 * Add another state after apogee for secondary fire (i.e. Unscented KF, Invariant EKF, simple complementary filter + event logic, particle filter)
 * Make the state logic not suck
+* Make the UI usable

@@ -550,7 +550,12 @@ def run_cli(argv: list[str] | None = None) -> None:
                 # Use "all_sensors" config as the main current_best for final comparison
                 if "all_sensors" in scenario_best_configs:
                     current_best = scenario_best_configs["all_sensors"]
-                    current_rmse = baseline_rmse  # Will be recomputed below
+                    # Recompute the optimized RMSE for all_sensors scenario
+                    final_test_cfg = _build_filter_cfg(**current_best)
+                    final_test_df = run_filter_pipeline(scenario_dataframes["all_sensors"], final_test_cfg)
+                    final_test_metrics = _compute_tune_metrics(final_test_df)
+                    current_rmse = final_test_metrics.get("pos3d_rmse_m", float("inf"))
+                    print(f"\n  → Using all_sensors optimized config (RMSE: {current_rmse:.4f} m)")
 
             else:
                 # ── Standard greedy coordinate descent (single scenario) ───
