@@ -76,10 +76,7 @@ def _lttb_downsample(x, y, n_out):
         best_idx = b_start
         max_area = -1.0
         for j in range(b_start, min(b_end + 1, length)):
-            area = abs(
-                (x[a_idx] - avg_x) * (y[j] - out_y[0])
-                - (x[a_idx] - x[j]) * (avg_y - out_y[0])
-            )
+            area = abs((x[a_idx] - avg_x) * (y[j] - out_y[0]) - (x[a_idx] - x[j]) * (avg_y - out_y[0]))
             if area > max_area:
                 max_area = area
                 best_idx = j
@@ -93,8 +90,8 @@ def _lttb_downsample(x, y, n_out):
 
 def _ds(x_series, y_series, n=_MAX_PLOT_POINTS):
     """Convenience: downsample Polars/list series for plotting."""
-    x = x_series.to_list() if hasattr(x_series, 'to_list') else list(x_series)
-    y = y_series.to_list() if hasattr(y_series, 'to_list') else list(y_series)
+    x = x_series.to_list() if hasattr(x_series, "to_list") else list(x_series)
+    y = y_series.to_list() if hasattr(y_series, "to_list") else list(y_series)
     return _lttb_downsample(x, y, n)
 
 

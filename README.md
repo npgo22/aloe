@@ -167,8 +167,6 @@ python3 gen_lut.py   # writes rust/src/lut_data.rs
 
 ## Wishlist
 * Harden the ESEKF to withstand sensor failures (currnetly completely falls apart if any of GPS, one of the two accelerometers, or the gyroscope fail)
-* Make the 
-* Add implementations for other sensor fusion algorithms
 * Improve state detection
 * Research ways to hoist errors into adaptive kalman filter so that bad readings may be discarded
 * Find a barometer that doesn't suck so much that the readings get killed
@@ -184,3 +182,6 @@ if normalized_innovation > 5.0 {
 }
 ```
 * Only use the ADXL375 if the BMI088 is saturated.
+* Add implementations for other sensor fusion algorithms
+* Add another state after apogee for secondary fire (i.e. Unscented KF, Invariant EKF, simple complementary filter + event logic, particle filter)
+* Make the state logic not suck
