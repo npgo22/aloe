@@ -1,3 +1,5 @@
+"""CLI batch mode for aloe rocket simulator."""
+
 import argparse
 import itertools
 import sys
@@ -6,20 +8,20 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from aloe.sim import RocketParams, SensorConfig, simulate_rocket, add_sensor_data
 from aloe.params import (
-    get_param_ranges,
-    ESKF_TUNING_PARAMS,
     ESKF_TUNING_DEFAULTS,
+    ESKF_TUNING_PARAMS,
     FLIGHT_STAGES,
     NUM_STAGES,
+    get_param_ranges,
 )
+from aloe.sim import RocketParams, SensorConfig, add_sensor_data, simulate_rocket
 
 try:
     from aloe.filter import (
         FilterConfig,
-        run_filter_pipeline,
         compute_error_report,
+        run_filter_pipeline,
         write_error_report_xlsx,
     )
 

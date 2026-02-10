@@ -13,10 +13,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-from aloe.params import ESKF_TUNING_DEFAULTS
-
 import numpy as np
 import polars as pl
+
+from aloe.params import ESKF_TUNING_DEFAULTS
 
 # ---------------------------------------------------------------------------
 # Try importing the native module — fall back to a stub for import-time safety
@@ -24,12 +24,12 @@ import polars as pl
 # ---------------------------------------------------------------------------
 try:
     from aloe.aloe_core import (
-        run_eskf_on_arrays,
-        quantize_flight_array,
         dequantize_flight_array,
-        quantize_recovery_array,
         dequantize_recovery_array,
         detect_truth_states,
+        quantize_flight_array,
+        quantize_recovery_array,
+        run_eskf_on_arrays,
     )
 
     _HAS_NATIVE = True

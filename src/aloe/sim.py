@@ -1,7 +1,8 @@
-import polars as pl
 from dataclasses import dataclass, field
 
-from aloe.aloe_core import simulate_rocket_rs, add_sensor_data_rs
+import polars as pl
+
+from aloe.aloe_core import add_sensor_data_rs, simulate_rocket_rs
 
 
 @dataclass

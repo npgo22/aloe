@@ -38,3 +38,55 @@ dev = [
 
 [tool.black]
 line-length=120
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "ARG", # flake8-unused-arguments
+    "PTH", # flake8-use-pathlib
+    "RUF", # Ruff-specific rules
+    "ICN", # flake8-import-conventions
+    "PIE", # flake8-pie
+    "PYI", # flake8-pyi
+    "PT",  # flake8-pytest-style
+    "Q",   # flake8-quotes
+    "RSE", # flake8-raise
+    "RET", # flake8-return
+    "SLF", # flake8-self
+    "SLOT", # flake8-slots
+    "TID", # flake8-tidy-imports
+    "TCH", # flake8-type-checking
+    "INT", # flake8-gettext
+    "ARG001", # unused-function-argument
+    "ARG002", # unused-method-argument
+]
+ignore = [
+    "D100",  # Missing docstring in public module
+    "D104",  # Missing docstring in public package
+    "D203",  # 1 blank line required before class docstring
+    "D212",  # Multi-line docstring summary should start at the first line
+    "T201",  # Print statements (CLI output is intentional)
+    "C901",  # Function complexity
+    "D103",  # Missing docstring in public function
+    "RUF001", # Unicode characters in strings
+    "RUF002", # Unicode characters in docstrings
+    "RUF003", # Unicode characters in comments
+    "E501",  # Line too long (handled by black with 120 chars)
+    "PTH123", # open() vs Path.open() - not critical
+    "N806",  # Variable naming in functions - constants used in functions
+    "B007",  # Unused loop variables - tuple unpacking often needs all vars
+    "B905",  # zip() without strict - not needed for most use cases
+    "C408",  # dict() calls - plotly API uses this style
+    "C416",  # dict comprehension - readability preference
+    "SLF001", # Private member access - needed for NiceGUI internals
+    "ARG001", # Unused function arguments - callback signatures often require them
+    "ARG005", # Unused lambda arguments
+]

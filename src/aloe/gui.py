@@ -1,32 +1,38 @@
-import io
 import hashlib
+import io
 from dataclasses import fields
-from typing import Any, Union
-from nicegui import run, ui
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import numpy as np
-import polars as pl
+from typing import Any
 
+import numpy as np
+import plotly.graph_objects as go
+import polars as pl
+from nicegui import run, ui
+from plotly.subplots import make_subplots
+
+from aloe.params import (
+    ESKF_TUNING_DEFAULTS,
+    ESKF_TUNING_PARAMS,
+    FLIGHT_STAGES,
+    get_env_sliders,
+    get_rocket_sliders,
+    get_sensor_latency_sliders,
+    get_sensor_rate_sliders,
+)
 from aloe.sim import (
+    PRESETS,
     RocketParams,
     SensorConfig,
-    PRESETS,
-    simulate_rocket,
     add_sensor_data,
-)
-from aloe.params import (
-    get_rocket_sliders,
-    get_env_sliders,
-    get_sensor_rate_sliders,
-    get_sensor_latency_sliders,
-    ESKF_TUNING_PARAMS,
-    ESKF_TUNING_DEFAULTS,
-    FLIGHT_STAGES,
+    simulate_rocket,
 )
 
 try:
-    from aloe.filter import run_filter_pipeline, compute_error_report, FilterConfig, _HAS_NATIVE
+    from aloe.filter import (
+        _HAS_NATIVE,
+        FilterConfig,
+        compute_error_report,
+        run_filter_pipeline,
+    )
 
     _CAN_FILTER = _HAS_NATIVE
 except Exception:
@@ -122,7 +128,7 @@ def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
             z=df_ds["altitude_m"].to_list(),
             mode="lines",
             name="Truth",
-            line=dict(color="blue", width=4),
+            line={"color": "blue", "width": 4},
         )
     ]
 
@@ -978,7 +984,7 @@ def index_page():
     full_df: dict[str, Any] = {"df": None}
     debounce_timer: dict[str, ui.timer | None] = {"t": None}
     slider_refs: dict[str, ui.slider] = {}
-    value_labels: dict[str, Union[ui.label, ui.number]] = {}
+    value_labels: dict[str, ui.label | ui.number] = {}
 
     # UI elements to be initialized later
     plot_3d = None

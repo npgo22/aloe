@@ -2,9 +2,9 @@
 """Generate static LUT data for sin/cos and baro powf.
 
 Writes rust/src/lut_data.rs with:
-  - SIN_TABLE: 8192 entries, quarter-wave, index i → sin(i/8191 × π/2)
-  - BARO_POW_TABLE: 8192 entries, index i → (i/8191)^BARO_EXPONENT
-  - PRESSURE_TO_ALTITUDE_LUT: 8192 entries, pressure ratio → altitude (m)
+  - SIN_TABLE: 8192 entries, quarter-wave, index i -> sin(i/8191 * pi/2)
+  - BARO_POW_TABLE: 8192 entries, index i -> (i/8191)^BARO_EXPONENT
+  - PRESSURE_TO_ALTITUDE_LUT: 8192 entries, pressure ratio -> altitude (m)
 
 Resolution is high enough that nearest-index lookup (no interpolation)
 gives < 2e-4 max absolute error for sin/cos and < 0.05% relative error
@@ -12,22 +12,22 @@ for the baro power function.
 """
 
 import math
-import os
+from pathlib import Path
 
 SIN_N = 8192
 BARO_N = 8192
-BARO_EXPONENT = (8.314 * 0.0065) / (9.80665 * 0.02896)  # ≈ 0.190285
+BARO_EXPONENT = (8.314 * 0.0065) / (9.80665 * 0.02896)  # approx 0.190285
 COLS = 8  # values per line
 
-OUTPATH = os.path.join(os.path.dirname(__file__), "rust", "src", "lut_data.rs")
+OUTPATH = Path(__file__).parent / "rust" / "src" / "lut_data.rs"
 
 # ISA (International Standard Atmosphere) model constants
 G0 = 9.80665  # m/s^2
-R = 287.05  # J/(kg·K) specific gas constant for air
+R = 287.05  # J/(kg*K) specific gas constant for air
 T0 = 288.15  # K, sea level standard temperature
 P0 = 101325.0  # Pa, sea level standard pressure
 
-# ISA atmospheric layers (base geopotential altitude, base temperature, temperature lapse rate)
+# ISA atmospheric layers (base altitude m, base temp K, lapse rate K/m)
 ISA_LAYERS = [
     (0, 288.15, -0.0065),  # Troposphere: 0-11km
     (11000, 216.65, 0.0),  # Tropopause: 11-20km (isothermal)
@@ -54,26 +54,24 @@ def isa_pressure_at_altitude(alt_m: float) -> float:
                 # p = p_base * exp(-g0 * h / (R * T))
                 p_base = isa_pressure_at_altitude(base_alt) if base_alt > 0 else P0
                 return p_base * math.exp(-G0 * layer_alt / (R * base_temp))
-            else:
-                # Lapse rate layer
-                # p = p_base * (T / T_base)^(g0 / (R * L))
-                t = base_temp + lapse * layer_alt
-                if base_alt == 0:
-                    p_base = P0
-                else:
-                    p_base = isa_pressure_at_altitude(base_alt)
-                exponent = G0 / (R * lapse)
-                return p_base * (t / base_temp) ** exponent
+            # Lapse rate layer
+            # p = p_base * (T / T_base)^(g0 / (R * L))
+            t = base_temp + lapse * layer_alt
+            p_base = P0 if base_alt == 0 else isa_pressure_at_altitude(base_alt)
+            exponent = G0 / (R * lapse)
+            return p_base * (t / base_temp) ** exponent
 
     # Above defined layers, approximate
     return 0.0
 
 
 def fmt(v: float) -> str:
+    """Format float for LUT output."""
     return f"{v:.10e}"
 
 
 def write_table(f, name: str, n: int, gen):
+    """Write a static array table to file."""
     f.write(f"pub static {name}: [f32; {n}] = [\n")
     for row_start in range(0, n, COLS):
         row_end = min(row_start + COLS, n)

@@ -19,6 +19,7 @@ Examples:
 
 
 def main():
+    """Run the aloe application."""
     args = sys.argv[1:]
 
     # Global help that does not import NiceGUI
@@ -37,9 +38,10 @@ def main():
     if args and args[0] == "gui":
         args = args[1:]
     # Preserve any extra args for NiceGUI (if supplied)
-    sys.argv = [sys.argv[0]] + args
-    from . import gui  # noqa: F401
+    sys.argv = [sys.argv[0], *args]
     from nicegui import ui
+
+    from . import gui  # noqa: F401
 
     ui.run(host="0.0.0.0", port=8080, title="Aloe: Nolan's Sim", reload=False)
 
