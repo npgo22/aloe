@@ -757,6 +757,9 @@ def run_cli(argv: list[str] | None = None) -> None:
     quant_vs_truth_cols = [c for c in summary_df.columns if c.startswith("quant_") and "_rt_" not in c]
     quant_rt_cols = [c for c in summary_df.columns if "_rt_" in c]
 
+    def _fmt(v: float | None) -> str:
+        return f"{v:>12.3f}" if v is not None else f"{'N/A':>12s}"
+
     def _print_group(title: str, cols: list[str]) -> None:
         if not cols:
             return
@@ -764,8 +767,11 @@ def run_cli(argv: list[str] | None = None) -> None:
         print(f"  {'metric':<30s} {'min':>12s} {'max':>12s} {'mean':>12s} {'std':>12s}")
         print(f"  {'─' * 30} {'─' * 12} {'─' * 12} {'─' * 12} {'─' * 12}")
         for col in cols:
-            s = summary_df[col]
-            print(f"  {col:<30s} {s.min():>12.3f} {s.max():>12.3f} {s.mean():>12.3f} {s.std():>12.3f}")
+            s = summary_df[col].drop_nulls()
+            if len(s) == 0:
+                continue
+            vstd = s.std() if len(s) > 1 else 0.0
+            print(f"  {col:<30s} {_fmt(s.min())} {_fmt(s.max())} {_fmt(s.mean())} {_fmt(vstd)}")
 
     print("\n── Sweep Statistics ──")
     _print_group("Flight Parameters", flight_cols)
