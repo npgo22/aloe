@@ -10,7 +10,7 @@ on:
       tune_steps:
         description: "Steps per tuning parameter (log-spaced)"
         type: number
-        default: 30
+        default: 45
       tune_stages:
         description: "Stages to sweep (space-separated, default: all)"
         type: string
@@ -97,7 +97,7 @@ jobs:
 
       - name: Greedy tune (${{ matrix.name }})
         run: |
-          STEPS=${{ inputs.tune_steps || 15 }}
+          STEPS=${{ inputs.tune_steps || 45 }}
           STAGES="${{ inputs.tune_stages || 'pad burn coasting recovery' }}"
           uv run aloe cli \
             ${{ matrix.args }} \
