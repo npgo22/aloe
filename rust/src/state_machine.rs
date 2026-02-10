@@ -77,8 +77,14 @@ pub struct StateMachine {
     /// Index by FlightState as u8 (0..=3).
     transition_times: [f32; NUM_STAGES],
     prev_vel_d: f32,
+    /// Last velocity used for acceleration calculation (to detect new data)
+    last_accel_vel_d: f32,
+    /// Time of last acceleration calculation
+    last_accel_time: f32,
     confirm_counter: u32,
     pending_state: Option<FlightState>,
+    /// Max velocity seen (for detecting apogee without IMU)
+    max_upward_vel: f32,
 }
 
 impl Default for StateMachine {
@@ -93,8 +99,11 @@ impl StateMachine {
             state: FlightState::Pad,
             transition_times: [f32::NAN; NUM_STAGES],
             prev_vel_d: 0.0,
+            last_accel_vel_d: 0.0,
+            last_accel_time: 0.0,
             confirm_counter: 0,
             pending_state: None,
+            max_upward_vel: 0.0,
         }
     }
 
@@ -120,32 +129,63 @@ impl StateMachine {
             return self.state;
         }
 
-        // Vertical acceleration estimate (positive upward).
-        // In NED, vel_d is positive downward, so upward accel = -(dvel_d / dt).
-        // Only compute acceleration if velocity has changed (new sensor data)
-        // or if enough time has passed (to avoid division by near-zero dt).
-        let vel_change = vel_d - self.prev_vel_d;
-        let accel_up = if vel_change.abs() > 0.1 || dt > 0.05 {
-            // Significant velocity change or enough time elapsed
-            -(vel_change) / dt
-        } else {
-            // No new sensor data, use accumulated acceleration from previous samples
-            // or assume zero acceleration for coasting
-            0.0
-        };
+        // Track max upward velocity (negative vel_d = upward in NED)
+        if vel_d < self.max_upward_vel {
+            self.max_upward_vel = vel_d;
+        }
+
+        // Calculate acceleration only when we have new velocity data
+        // This handles low-rate sensors (GPS at 10Hz) with high-rate ESKF (100Hz)
+        let vel_change = vel_d - self.last_accel_vel_d;
+        let time_since_last_accel = time_s - self.last_accel_time;
+
+        // Only compute acceleration if:
+        // 1. Velocity has changed significantly (new sensor data), OR
+        // 2. Enough time has passed (0.05s = 20Hz minimum)
+        let (accel_up, have_new_accel_data) =
+            if vel_change.abs() > 0.05 || time_since_last_accel > 0.05 {
+                let accel = if time_since_last_accel > 1e-6 {
+                    -(vel_change) / time_since_last_accel
+                } else {
+                    0.0
+                };
+                self.last_accel_vel_d = vel_d;
+                self.last_accel_time = time_s;
+                (accel, true)
+            } else {
+                // No new data - reuse last acceleration (but mark as stale)
+                (0.0, false)
+            };
+
         self.prev_vel_d = vel_d;
 
         let candidate = match self.state {
             FlightState::Pad => {
-                if accel_up > IGNITION_ACCEL_THRESHOLD {
+                // Primary: detect high upward acceleration (IMU available)
+                // Fallback: detect significant upward velocity (GPS only)
+                if have_new_accel_data && accel_up > IGNITION_ACCEL_THRESHOLD {
+                    Some(FlightState::Burn)
+                } else if !have_new_accel_data && vel_d < -10.0 {
+                    // GPS-only fallback: going up faster than 10 m/s
                     Some(FlightState::Burn)
                 } else {
                     None
                 }
             }
             FlightState::Burn => {
-                if accel_up < BURN_ACCEL_THRESHOLD {
+                // Primary: detect low acceleration (burnout)
+                // Fallback: detect velocity peaking (no longer accelerating upward)
+                if have_new_accel_data && accel_up < BURN_ACCEL_THRESHOLD {
                     Some(FlightState::Coasting)
+                } else if !have_new_accel_data {
+                    // GPS-only fallback: velocity is decreasing from max
+                    // (vel_d is becoming less negative = slowing down)
+                    let velocity_decreasing = vel_d > self.max_upward_vel + 5.0;
+                    if velocity_decreasing && vel_d < 0.0 {
+                        Some(FlightState::Coasting)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
