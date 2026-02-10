@@ -122,7 +122,17 @@ impl StateMachine {
 
         // Vertical acceleration estimate (positive upward).
         // In NED, vel_d is positive downward, so upward accel = -(dvel_d / dt).
-        let accel_up = -(vel_d - self.prev_vel_d) / dt;
+        // Only compute acceleration if velocity has changed (new sensor data)
+        // or if enough time has passed (to avoid division by near-zero dt).
+        let vel_change = vel_d - self.prev_vel_d;
+        let accel_up = if vel_change.abs() > 0.1 || dt > 0.05 {
+            // Significant velocity change or enough time elapsed
+            -(vel_change) / dt
+        } else {
+            // No new sensor data, use accumulated acceleration from previous samples
+            // or assume zero acceleration for coasting
+            0.0
+        };
         self.prev_vel_d = vel_d;
 
         let candidate = match self.state {

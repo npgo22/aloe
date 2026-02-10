@@ -181,6 +181,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"Flight stages to sweep (default: all). Valid: {' '.join(FLIGHT_STAGES)}",
     )
     p.add_argument(
+        "--sensor-failure-test",
+        action="store_true",
+        help="Test tuning under various sensor failure scenarios (IMU lost, GPS lost, baro lost, etc.)",
+    )
+    p.add_argument(
         "--mag-declination",
         type=float,
         default=0.0,
@@ -376,9 +381,73 @@ def run_cli(argv: list[str] | None = None) -> None:
         baseline_rmse = baseline_metrics.get("pos3d_rmse_m", float("inf"))
         print(f"Baseline pos3d_rmse = {baseline_rmse:.4f} m (all defaults)")
 
+        # ── Sensor failure scenario definitions ──────────────────────
+        FAILURE_SCENARIOS = [
+            ("all_sensors", []),
+            ("no_imu", ["bmi088_accel", "bmi088_gyro", "adxl375"]),
+            ("no_gyro", ["bmi088_gyro"]),
+            ("no_accel", ["bmi088_accel", "adxl375"]),
+            ("no_gps", ["lc29h"]),
+            ("no_baro", ["ms5611"]),
+            ("no_mag", ["lis3mdl"]),
+            (
+                "gps_only",
+                ["bmi088_accel", "bmi088_gyro", "adxl375", "ms5611", "lis3mdl"],
+            ),
+            (
+                "baro_only",
+                ["bmi088_accel", "bmi088_gyro", "adxl375", "lc29h", "lis3mdl"],
+            ),
+        ]
+
+        # Pre-generate sensor data for all failure scenarios once
+        scenario_dataframes: dict[str, pl.DataFrame] = {}
+        if args.sensor_failure_test:
+            print("\n── Pre-generating sensor data for failure scenarios ──")
+            for scenario_name, disabled_sensors in FAILURE_SCENARIOS:
+                test_sensor_cfg = SensorConfig(
+                    noise_scale=args.noise_scale,
+                    seed=args.seed,
+                )
+                for s in disabled_sensors:
+                    test_sensor_cfg.enabled[s] = False
+
+                test_df = simulate_rocket(base_params)
+                if not args.no_sensors:
+                    test_df = add_sensor_data(test_df, test_sensor_cfg)
+                scenario_dataframes[scenario_name] = test_df
+            print(f"  Generated {len(FAILURE_SCENARIOS)} scenarios")
+
         current_best: dict[str, list[float]] | None = None
         tune_summary_rows: list[dict] = []
         run_idx = 0
+
+        def _evaluate_config(
+            fcfg, scenario_dfs: dict[str, pl.DataFrame] | None = None
+        ) -> tuple[float, dict[str, dict]]:
+            """Evaluate a filter config against one or more scenarios.
+
+            Returns:
+                (worst_case_rmse, dict[scenario_name, metrics])
+            """
+            if scenario_dfs is None:
+                # Single scenario (backward compat)
+                df = run_filter_pipeline(base_df, fcfg)
+                metrics = _compute_tune_metrics(df)
+                rmse = metrics.get("pos3d_rmse_m", float("inf"))
+                return rmse, {"default": metrics}
+
+            # Multi-scenario evaluation
+            scenario_metrics = {}
+            worst_rmse = 0.0
+            for scenario_name, scenario_df in scenario_dfs.items():
+                df = run_filter_pipeline(scenario_df, fcfg)
+                metrics = _compute_tune_metrics(df)
+                rmse = metrics.get("pos3d_rmse_m", float("inf"))
+                scenario_metrics[scenario_name] = metrics
+                worst_rmse = max(worst_rmse, rmse)
+
+            return worst_rmse, scenario_metrics
 
         if mode == "greedy":
             # ── Greedy coordinate descent ─────────────────────────
@@ -387,10 +456,18 @@ def run_cli(argv: list[str] | None = None) -> None:
             # all previously-optimised values.
             n_dims = len(tune_names) * len(tune_stage_names)
             total = n_dims * steps
-            print(
-                f"Greedy tune: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps "
-                f"= {total} evaluations (sequential coordinate descent)"
-            )
+
+            if args.sensor_failure_test:
+                print(
+                    f"Robust greedy tune: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps × {len(FAILURE_SCENARIOS)} scenarios "
+                    f"= {total * len(FAILURE_SCENARIOS)} total evaluations"
+                )
+                print("  Optimizing for worst-case RMSE across all sensor failure scenarios")
+            else:
+                print(
+                    f"Greedy tune: {len(tune_names)} params × {len(tune_stage_names)} stages × {steps} steps "
+                    f"= {total} evaluations (sequential coordinate descent)"
+                )
 
             # Current best config — start from defaults
             current_best = {tname: list(ESKF_TUNING_DEFAULTS[tname]) for tname in ESKF_TUNING_DEFAULTS}
@@ -412,17 +489,28 @@ def run_cli(argv: list[str] | None = None) -> None:
                         trial[tname][stage_idx] = val
                         fcfg = _build_filter_cfg(**trial)
 
-                        df = run_filter_pipeline(base_df, fcfg)
-                        metrics = _compute_tune_metrics(df)
-                        rmse = metrics.get("pos3d_rmse_m", float("inf"))
-
-                        trow: dict = {
-                            "tuning_param": tname,
-                            "stage": stage_name,
-                            "value": val,
-                            **metrics,
-                        }
-                        tune_summary_rows.append(trow)
+                        if args.sensor_failure_test:
+                            rmse, scenario_metrics = _evaluate_config(fcfg, scenario_dataframes)
+                            # Log all scenarios
+                            for scenario_name, metrics in scenario_metrics.items():
+                                trow: dict = {
+                                    "tuning_param": tname,
+                                    "stage": stage_name,
+                                    "value": val,
+                                    "scenario": scenario_name,
+                                    **metrics,
+                                }
+                                tune_summary_rows.append(trow)
+                        else:
+                            rmse, _ = _evaluate_config(fcfg)
+                            metrics = _compute_tune_metrics(run_filter_pipeline(base_df, fcfg))
+                            trow = {
+                                "tuning_param": tname,
+                                "stage": stage_name,
+                                "value": val,
+                                **metrics,
+                            }
+                            tune_summary_rows.append(trow)
 
                         marker = ""
                         if rmse < best_rmse_for_dim:
@@ -430,9 +518,21 @@ def run_cli(argv: list[str] | None = None) -> None:
                             best_val_for_dim = val
                             marker = " ★"
 
-                        print(
-                            f"  [{run_idx}/{total}] {tname}/{stage_name}={val:.6g}  " f"pos3d_rmse={rmse:.4f}{marker}"
-                        )
+                        if args.sensor_failure_test:
+                            # Show worst-case scenario
+                            worst_scenario = max(
+                                scenario_metrics.items(),
+                                key=lambda x: x[1].get("pos3d_rmse_m", 0),
+                            )
+                            print(
+                                f"  [{run_idx}/{total}] {tname}/{stage_name}={val:.6g}  "
+                                f"worst_rmse={rmse:.4f} ({worst_scenario[0]}){marker}"
+                            )
+                        else:
+                            print(
+                                f"  [{run_idx}/{total}] {tname}/{stage_name}={val:.6g}  "
+                                f"pos3d_rmse={rmse:.4f}{marker}"
+                            )
 
                     # Lock in this dimension's best
                     current_best[tname][stage_idx] = best_val_for_dim

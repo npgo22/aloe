@@ -1,4 +1,4 @@
-use crate::lut_data::{cos_lut, powf_baro, sin_lut};
+use crate::lut_data::{cos_lut, pressure_ratio_to_altitude_lut, sin_lut};
 use crate::state_machine::StateMachine;
 use crate::state_machine::NUM_STAGES;
 use nalgebra::{Matrix3, SMatrix, SVector, UnitQuaternion, Vector3};
@@ -8,7 +8,6 @@ use pyo3::prelude::*;
 // Constants
 // ---------------------------------------------------------------------------
 const GRAVITY: f32 = 9.80665;
-const STD_TEMP_K: f32 = 288.15;
 const EARTH_RADIUS: f32 = 6_371_000.0;
 
 // ---------------------------------------------------------------------------
@@ -45,8 +44,9 @@ impl Default for EskfTuning {
 }
 
 // Accelerometer Blending Thresholds (m/s²)
-const LOW_G_THRESHOLD: f32 = 145.0;
-const HIGH_G_THRESHOLD: f32 = 156.0;
+// BMI088 saturates at ±24g = ±235.44 m/s²
+// Only switch to ADXL375 when BMI088 is near saturation
+const LOW_G_SATURATION_THRESHOLD: f32 = 156.0;
 
 // History ring-buffer for GPS latency compensation
 const BUFFER_SIZE: usize = 256;
@@ -171,9 +171,9 @@ impl RocketEsKf {
     // =====================================================================
     pub fn predict(
         &mut self,
-        gyro: Vector3<f32>,
-        accel_low: Vector3<f32>,
-        accel_high: Vector3<f32>,
+        gyro: Option<Vector3<f32>>,
+        accel_low: Option<Vector3<f32>>,
+        accel_high: Option<Vector3<f32>>,
         time_us: u64,
     ) {
         let dt = match self.last_time_us {
@@ -185,56 +185,110 @@ impl RocketEsKf {
             return;
         }
 
-        let accel_meas = self.blend_accels(accel_low, accel_high);
+        // Get accelerometer measurement if available
+        let accel_meas = match (accel_low, accel_high) {
+            (Some(low), Some(high)) => Some(self.blend_accels(low, high)),
+            (Some(low), None) => Some(low),
+            (None, Some(high)) => Some(high),
+            (None, None) => None,
+        };
 
-        let w_unbiased = gyro - self.state.gyro_bias;
-        let a_unbiased = accel_meas - self.state.accel_bias;
+        if let Some(accel) = accel_meas {
+            // Normal IMU-based prediction
+            let a_unbiased = accel - self.state.accel_bias;
+            let q_rot = self.state.orientation.to_rotation_matrix();
+            let a_ned = q_rot * a_unbiased + Vector3::new(0.0, 0.0, GRAVITY);
 
-        let q_rot = self.state.orientation.to_rotation_matrix();
-        let a_ned = q_rot * a_unbiased + Vector3::new(0.0, 0.0, GRAVITY);
+            self.state.position += self.state.velocity * dt + 0.5 * a_ned * dt * dt;
+            self.state.velocity += a_ned * dt;
 
-        self.state.position += self.state.velocity * dt + 0.5 * a_ned * dt * dt;
-        self.state.velocity += a_ned * dt;
+            // Only update orientation if we have gyro data
+            if let Some(gyro_vec) = gyro {
+                let w_unbiased = gyro_vec - self.state.gyro_bias;
+                let angle = w_unbiased.norm() * dt;
+                if angle > 1e-8 {
+                    let axis = w_unbiased.normalize();
+                    let dq = UnitQuaternion::from_axis_angle(
+                        &nalgebra::Unit::new_normalize(axis),
+                        angle,
+                    );
+                    self.state.orientation *= dq;
+                }
+            }
 
-        let angle = w_unbiased.norm() * dt;
-        if angle > 1e-8 {
-            let axis = w_unbiased.normalize();
-            let dq = UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), angle);
-            self.state.orientation *= dq;
+            // --- Covariance Propagation ---
+            let mut f_x = ErrorCovariance::identity();
+            f_x.fixed_view_mut::<3, 3>(0, 3).fill_diagonal(dt);
+
+            let a_skew = skew_symmetric(a_unbiased);
+            let vel_att = -(q_rot.matrix() * a_skew) * dt;
+            f_x.fixed_view_mut::<3, 3>(3, 6).copy_from(&vel_att);
+
+            let vel_ab = -q_rot.matrix() * dt;
+            f_x.fixed_view_mut::<3, 3>(3, 9).copy_from(&vel_ab);
+
+            // Only include attitude dynamics in F matrix if we have gyro
+            if let Some(gyro_vec) = gyro {
+                let w_unbiased = gyro_vec - self.state.gyro_bias;
+                let w_skew = skew_symmetric(w_unbiased);
+                let att_att = Matrix3::identity() - w_skew * dt;
+                f_x.fixed_view_mut::<3, 3>(6, 6).copy_from(&att_att);
+                f_x.fixed_view_mut::<3, 3>(6, 12).fill_diagonal(-dt);
+            }
+
+            let mut q = ErrorCovariance::zeros();
+            let t = &self.tuning;
+            let and2 = t.accel_noise_density * t.accel_noise_density;
+            let gnd2 = t.gyro_noise_density * t.gyro_noise_density;
+            let pnq = t.pos_process_noise * t.pos_process_noise;
+            q.fixed_view_mut::<3, 3>(0, 0).fill_diagonal(pnq * dt);
+            q.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(and2 * dt);
+            q.fixed_view_mut::<3, 3>(6, 6).fill_diagonal(gnd2 * dt);
+            q.fixed_view_mut::<3, 3>(9, 9)
+                .fill_diagonal(t.accel_bias_instability * dt);
+            q.fixed_view_mut::<3, 3>(12, 12)
+                .fill_diagonal(t.gyro_bias_instability * dt);
+
+            // If no gyro, increase attitude uncertainty
+            if gyro.is_none() {
+                let coast_factor = 10.0;
+                q.fixed_view_mut::<3, 3>(6, 6)
+                    .fill_diagonal(gnd2 * dt * coast_factor);
+            }
+
+            self.p_cov = f_x * self.p_cov * f_x.transpose() + q;
+        } else {
+            // No accelerometer - coast on position/velocity with high uncertainty
+            // Use constant velocity model
+            self.state.position += self.state.velocity * dt;
+            // Velocity and orientation remain unchanged (we're coasting)
+
+            // High uncertainty growth when no IMU data
+            let mut q = ErrorCovariance::zeros();
+            let t = &self.tuning;
+            let pnq = t.pos_process_noise * t.pos_process_noise;
+            // Position uncertainty grows with velocity uncertainty
+            q.fixed_view_mut::<3, 3>(0, 0)
+                .fill_diagonal(pnq * dt * 100.0);
+            // Velocity uncertainty grows significantly without accel
+            q.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(100.0 * dt); // 10 m/s/s uncertainty
+                                                                      // Attitude uncertainty grows without gyro
+            let gnd2 = t.gyro_noise_density * t.gyro_noise_density;
+            q.fixed_view_mut::<3, 3>(6, 6)
+                .fill_diagonal(gnd2 * dt * 100.0);
+            q.fixed_view_mut::<3, 3>(9, 9)
+                .fill_diagonal(t.accel_bias_instability * dt);
+            q.fixed_view_mut::<3, 3>(12, 12)
+                .fill_diagonal(t.gyro_bias_instability * dt);
+
+            // Simple F matrix for constant velocity
+            let mut f_x = ErrorCovariance::identity();
+            f_x.fixed_view_mut::<3, 3>(0, 3).fill_diagonal(dt);
+
+            self.p_cov = f_x * self.p_cov * f_x.transpose() + q;
         }
 
-        // --- Covariance Propagation ---
-        let mut f_x = ErrorCovariance::identity();
-        f_x.fixed_view_mut::<3, 3>(0, 3).fill_diagonal(dt);
-
-        let a_skew = skew_symmetric(a_unbiased);
-        let vel_att = -(q_rot.matrix() * a_skew) * dt;
-        f_x.fixed_view_mut::<3, 3>(3, 6).copy_from(&vel_att);
-
-        let vel_ab = -q_rot.matrix() * dt;
-        f_x.fixed_view_mut::<3, 3>(3, 9).copy_from(&vel_ab);
-
-        let w_skew = skew_symmetric(w_unbiased);
-        let att_att = Matrix3::identity() - w_skew * dt;
-        f_x.fixed_view_mut::<3, 3>(6, 6).copy_from(&att_att);
-        f_x.fixed_view_mut::<3, 3>(6, 12).fill_diagonal(-dt);
-
-        let mut q = ErrorCovariance::zeros();
-        let t = &self.tuning;
-        let and2 = t.accel_noise_density * t.accel_noise_density;
-        let gnd2 = t.gyro_noise_density * t.gyro_noise_density;
-        let pnq = t.pos_process_noise * t.pos_process_noise;
-        q.fixed_view_mut::<3, 3>(0, 0).fill_diagonal(pnq * dt); // position
-        q.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(and2 * dt); // velocity
-        q.fixed_view_mut::<3, 3>(6, 6).fill_diagonal(gnd2 * dt); // attitude
-        q.fixed_view_mut::<3, 3>(9, 9)
-            .fill_diagonal(t.accel_bias_instability * dt);
-        q.fixed_view_mut::<3, 3>(12, 12)
-            .fill_diagonal(t.gyro_bias_instability * dt);
-
-        self.p_cov = f_x * self.p_cov * f_x.transpose() + q;
         self.p_cov = (self.p_cov + self.p_cov.transpose()) * 0.5;
-
         self.push_history(time_us);
     }
 
@@ -246,13 +300,11 @@ impl RocketEsKf {
         let mut h = SMatrix::<f32, 1, 15>::zeros();
         h[(0, 2)] = 1.0;
 
-        // Hypsometric formula (ISA model):
-        //   h = (T0 / L_pos) * (1 - (P/P0)^(R*L_pos / (g*M)))
-        // where L_pos = 0.0065 K/m (positive temperature lapse rate).
-        // The exponent R*L/(g*M) ≈ 0.190285 is baked into powf_baro's LUT.
-        let lapse_pos: f32 = 0.0065;
-        let alt_above_ground =
-            (STD_TEMP_K / lapse_pos) * (1.0 - powf_baro(pressure / self.ground_pressure));
+        // Use full ISA model LUT for altitude computation
+        // This is accurate up to 50km (unlike the simple hypsometric formula
+        // which is only valid up to ~11km)
+        let pressure_ratio = pressure / self.ground_pressure;
+        let alt_above_ground = pressure_ratio_to_altitude_lut(pressure_ratio);
         let z_meas = -alt_above_ground; // NED: D = -altitude
         let innovation = z_meas - self.state.position.z;
         let r = SMatrix::<f32, 1, 1>::new(self.tuning.r_baro);
@@ -320,6 +372,18 @@ impl RocketEsKf {
         r: &SMatrix<f32, D, D>,
     ) {
         let s = h * self.p_cov * h.transpose() + r;
+
+        // Innovation-based fault detection gating
+        // Reject measurements with normalized innovation > threshold
+        const INNOVATION_GATE_THRESHOLD: f32 = 5.0;
+        let s_diag_norm = s.diagonal().map(|v| v.sqrt()).norm();
+        if s_diag_norm > 1e-10 {
+            let normalized_innovation = innovation.norm() / s_diag_norm;
+            if normalized_innovation > INNOVATION_GATE_THRESHOLD {
+                return; // reject this measurement
+            }
+        }
+
         if let Some(s_inv) = s.try_inverse() {
             let k = self.p_cov * h.transpose() * s_inv;
             let dx = k * innovation;
@@ -348,11 +412,9 @@ impl RocketEsKf {
 
     fn blend_accels(&self, low: Vector3<f32>, high: Vector3<f32>) -> Vector3<f32> {
         let mag = low.norm();
-        if mag > HIGH_G_THRESHOLD {
+        // Only use ADXL375 high-g accel when BMI088 is near saturation
+        if mag > LOW_G_SATURATION_THRESHOLD {
             high
-        } else if mag > LOW_G_THRESHOLD {
-            let alpha = (mag - LOW_G_THRESHOLD) / (HIGH_G_THRESHOLD - LOW_G_THRESHOLD);
-            low.scale(1.0 - alpha) + high.scale(alpha)
         } else {
             low
         }
@@ -427,12 +489,18 @@ impl PyRocketEsKf {
         self.inner.set_home_location(lat_deg, lon_deg, alt_m);
     }
 
-    /// Predict step.  Arrays are [x, y, z].
-    fn predict(&mut self, gyro: [f32; 3], accel_low: [f32; 3], accel_high: [f32; 3], time_us: u64) {
+    /// Predict step. Arrays are [x, y, z]. Pass None for missing sensors.
+    fn predict(
+        &mut self,
+        gyro: Option<[f32; 3]>,
+        accel_low: Option<[f32; 3]>,
+        accel_high: Option<[f32; 3]>,
+        time_us: u64,
+    ) {
         self.inner.predict(
-            Vector3::from(gyro),
-            Vector3::from(accel_low),
-            Vector3::from(accel_high),
+            gyro.map(Vector3::from),
+            accel_low.map(Vector3::from),
+            accel_high.map(Vector3::from),
             time_us,
         );
     }
@@ -662,25 +730,29 @@ pub fn run_eskf_on_arrays(
     for i in 0..n {
         let t_us = (times_s[i] * 1_000_000.0) as u64;
 
-        // Run prediction when we have gyro + at least one accel source
-        let has_gyro = !gyro_x[i].is_nan();
-        let has_accel_low = !accel_low_x[i].is_nan();
-        let has_accel_high = !accel_high_x[i].is_nan();
+        // Run prediction when we have at least one accel source (gyro is optional)
+        let gyro = if gyro_x[i].is_nan() {
+            None
+        } else {
+            Some(Vector3::new(gyro_x[i], gyro_y[i], gyro_z[i]))
+        };
+        let accel_low = if accel_low_x[i].is_nan() {
+            None
+        } else {
+            Some(Vector3::new(accel_low_x[i], accel_low_y[i], accel_low_z[i]))
+        };
+        let accel_high = if accel_high_x[i].is_nan() {
+            None
+        } else {
+            Some(Vector3::new(
+                accel_high_x[i],
+                accel_high_y[i],
+                accel_high_z[i],
+            ))
+        };
 
-        if has_gyro && (has_accel_low || has_accel_high) {
-            let g = Vector3::new(gyro_x[i], gyro_y[i], gyro_z[i]);
-            let al = if has_accel_low {
-                Vector3::new(accel_low_x[i], accel_low_y[i], accel_low_z[i])
-            } else {
-                Vector3::new(accel_high_x[i], accel_high_y[i], accel_high_z[i])
-            };
-            let ah = if has_accel_high {
-                Vector3::new(accel_high_x[i], accel_high_y[i], accel_high_z[i])
-            } else {
-                al
-            };
-            kf.predict(g, al, ah, t_us);
-        }
+        // Predict with whatever we have (needs at least one accel)
+        kf.predict(gyro, accel_low, accel_high, t_us);
 
         // Corrections
         if !baro_pressure[i].is_nan() {

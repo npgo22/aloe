@@ -166,22 +166,14 @@ python3 gen_lut.py   # writes rust/src/lut_data.rs
 ```
 
 ## Wishlist
-* Harden the ESEKF to withstand sensor failures (currnetly completely falls apart if any of GPS, one of the two accelerometers, or the gyroscope fail)
+* Harden the ESEKF to withstand sensor failures (currently completely falls apart if any of GPS, one of the two accelerometers, or the gyroscope fail)
 * Improve state detection
 * Research ways to hoist errors into adaptive kalman filter so that bad readings may be discarded
-* Find a barometer that doesn't suck so much that the readings get killed
 * Make the simulated LIS3MDL reading useful by making it not a constant field with no attitude coupling.
-* Decouple ESEKF from gyro availability (right now predictions are not ran if the Gyro is lost)
+   - **Problem**: Current simulation is 3-DoF (translational only). The LIS3MDL magnetometer outputs constant values `[0.2, -0.4, 0.1]` gauss with no attitude coupling because the rocket's orientation is not tracked.
+   - **Solution**: Requires upgrading to full 6-DoF simulation with rotational dynamics (quaternion + angular velocity), aerodynamic moments, and proper body-frame sensor transformations.
 * Add emergency accelerometer fallback when attitude cannot be obtained
 * Use a LUT for the barometer to improve readings as the single-lapse-rate model is terrible past 11km
-* Add gating based on innovation-based fault detection:
-```python
-let normalized_innovation = innovation.norm() / s.diagonal().map(|v| v.sqrt()).norm();
-if normalized_innovation > 5.0 {
-    return; // reject this measurement
-}
-```
-* Only use the ADXL375 if the BMI088 is saturated.
 * Add implementations for other sensor fusion algorithms
 * Add another state after apogee for secondary fire (i.e. Unscented KF, Invariant EKF, simple complementary filter + event logic, particle filter)
 * Make the state logic not suck

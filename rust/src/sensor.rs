@@ -8,6 +8,53 @@ use pyo3::types::PyDict;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Normal};
 
+// ISA (International Standard Atmosphere) model constants
+const G0: f64 = 9.80665; // m/s^2
+const R: f64 = 287.05; // J/(kg·K) specific gas constant for air
+
+/// ISA atmospheric layer: (base_altitude_m, base_temp_K, lapse_rate_K_per_m, base_pressure_Pa)
+/// Base pressures are pre-computed for each layer boundary.
+const ISA_LAYERS: &[(f64, f64, f64, f64)] = &[
+    (0.0, 288.15, -0.0065, 101325.0), // Troposphere: 0-11km
+    (11000.0, 216.65, 0.0, 22632.0),  // Tropopause: 11-20km (isothermal)
+    (20000.0, 216.65, 0.001, 5474.8), // Stratosphere 1: 20-32km
+    (32000.0, 228.65, 0.0028, 868.0), // Stratosphere 2: 32-47km
+    (47000.0, 270.65, 0.0, 110.9),    // Stratopause: 47-51km (isothermal)
+];
+
+/// Calculate pressure at given altitude using full ISA model.
+/// Valid from sea level to ~51km.
+fn isa_pressure_at_altitude(alt_m: f64) -> f64 {
+    let alt_m = alt_m.max(0.0);
+
+    // Find which layer we're in
+    for i in 0..ISA_LAYERS.len() {
+        let (base_alt, base_temp, lapse, base_pressure) = ISA_LAYERS[i];
+        let next_base_alt = if i + 1 < ISA_LAYERS.len() {
+            ISA_LAYERS[i + 1].0
+        } else {
+            51000.0
+        };
+
+        if alt_m <= next_base_alt {
+            let layer_alt = alt_m - base_alt;
+
+            if lapse.abs() < 1e-10 {
+                // Isothermal layer: p = p_base * exp(-g0 * h / (R * T))
+                return base_pressure * (-G0 * layer_alt / (R * base_temp)).exp();
+            } else {
+                // Lapse rate layer: p = p_base * (T / T_base)^(g0 / (R * L))
+                let t = base_temp + lapse * layer_alt;
+                let exponent = -G0 / (R * lapse);
+                return base_pressure * (t / base_temp).powf(exponent);
+            }
+        }
+    }
+
+    // Above defined layers, return pressure at top of last layer
+    110.9 // Pressure at 47km
+}
+
 /// Check if time `t` falls on a sensor sample instant.
 #[inline]
 fn is_sample(t: f64, hz: f64, latency_s: f64) -> bool {
@@ -298,10 +345,10 @@ pub fn add_sensor_data_rs(
     // MS5611 baro
     if ms5611 {
         let s = 0.024 * ns;
-        let exp = 9.80665 * 0.0289644 / (8.31447 * 0.0065);
+        // Use full ISA model for pressure calculation (valid up to ~50km)
         let pressure: Vec<f64> = altitude_m
             .iter()
-            .map(|&h| 1013.25 * (1.0 - 0.0065 * h / 288.15).max(0.001).powf(exp))
+            .map(|&h| isa_pressure_at_altitude(h) / 100.0) // Convert Pa to mbar
             .collect();
         dict.set_item(
             "ms5611_pressure_mbar",
