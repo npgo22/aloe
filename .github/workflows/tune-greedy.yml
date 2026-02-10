@@ -10,7 +10,7 @@ on:
       tune_steps:
         description: "Steps per tuning parameter (log-spaced)"
         type: number
-        default: 15
+        default: 30
       tune_stages:
         description: "Stages to sweep (space-separated, default: all)"
         type: string
@@ -105,6 +105,7 @@ jobs:
             --tune-mode greedy \
             --tune-steps "$STEPS" \
             --tune-stages $STAGES \
+            --sensor-failure-test \
             -o /tmp/aloe-greedy-${{ matrix.name }}
 
       - name: Verify outputs

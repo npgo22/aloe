@@ -469,31 +469,48 @@ def run_cli(argv: list[str] | None = None) -> None:
                     f"= {total} evaluations (sequential coordinate descent)"
                 )
 
-            # Current best config — start from defaults
-            current_best = {tname: list(ESKF_TUNING_DEFAULTS[tname]) for tname in ESKF_TUNING_DEFAULTS}
-            current_rmse = baseline_rmse
+            if args.sensor_failure_test:
+                # ── Greedy coordinate descent PER SCENARIO ─────────────────
+                # Run complete greedy optimization for each failure scenario
+                # Each scenario gets independently optimized
+                scenario_best_configs: dict[str, dict[str, list[float]]] = {}
 
-            for tname in tune_names:
-                spec = ESKF_TUNING_PARAMS[tname]
-                values = np.logspace(np.log10(spec.min), np.log10(spec.max), steps).tolist()
+                for scenario_name, scenario_df in scenario_dataframes.items():
+                    print(f"\n── Optimizing for scenario: {scenario_name} ──")
 
-                for stage_idx in tune_stage_indices:
-                    stage_name = FLIGHT_STAGES[stage_idx]
-                    best_val_for_dim = current_best[tname][stage_idx]
-                    best_rmse_for_dim = current_rmse
+                    # Start fresh for each scenario
+                    current_best = {tname: list(ESKF_TUNING_DEFAULTS[tname]) for tname in ESKF_TUNING_DEFAULTS}
 
-                    for val in values:
-                        run_idx += 1
-                        # Build config: current best + this (param, stage) override
-                        trial = {k: list(v) for k, v in current_best.items()}
-                        trial[tname][stage_idx] = val
-                        fcfg = _build_filter_cfg(**trial)
+                    # Get baseline for this scenario
+                    baseline_cfg = _build_filter_cfg()
+                    baseline_df = run_filter_pipeline(scenario_df, baseline_cfg)
+                    baseline_metrics = _compute_tune_metrics(baseline_df)
+                    current_rmse = baseline_metrics.get("pos3d_rmse_m", float("inf"))
+                    print(f"  Baseline RMSE: {current_rmse:.4f} m")
 
-                        if args.sensor_failure_test:
-                            rmse, scenario_metrics = _evaluate_config(fcfg, scenario_dataframes)
-                            # Log all scenarios
-                            for scenario_name, metrics in scenario_metrics.items():
-                                trow: dict = {
+                    for tname in tune_names:
+                        spec = ESKF_TUNING_PARAMS[tname]
+                        values = np.logspace(np.log10(spec.min), np.log10(spec.max), steps).tolist()
+
+                        for stage_idx in tune_stage_indices:
+                            stage_name = FLIGHT_STAGES[stage_idx]
+                            best_val_for_dim = current_best[tname][stage_idx]
+                            best_rmse_for_dim = current_rmse
+
+                            for val in values:
+                                run_idx += 1
+                                # Build config: current best + this (param, stage) override
+                                trial = {k: list(v) for k, v in current_best.items()}
+                                trial[tname][stage_idx] = val
+                                fcfg = _build_filter_cfg(**trial)
+
+                                # Evaluate on THIS scenario only
+                                df = run_filter_pipeline(scenario_df, fcfg)
+                                metrics = _compute_tune_metrics(df)
+                                rmse = metrics.get("pos3d_rmse_m", float("inf"))
+
+                                # Log with scenario tag
+                                trow = {
                                     "tuning_param": tname,
                                     "stage": stage_name,
                                     "value": val,
@@ -501,9 +518,65 @@ def run_cli(argv: list[str] | None = None) -> None:
                                     **metrics,
                                 }
                                 tune_summary_rows.append(trow)
-                        else:
-                            rmse, _ = _evaluate_config(fcfg)
-                            metrics = _compute_tune_metrics(run_filter_pipeline(base_df, fcfg))
+
+                                marker = ""
+                                if rmse < best_rmse_for_dim:
+                                    best_rmse_for_dim = rmse
+                                    best_val_for_dim = val
+                                    marker = " ★"
+
+                                print(
+                                    f"    [{run_idx}] {scenario_name}/{tname}/{stage_name}={val:.6g}  "
+                                    f"rmse={rmse:.4f}{marker}"
+                                )
+
+                            # Lock in best for this dimension
+                            current_best[tname][stage_idx] = best_val_for_dim
+                            current_rmse = best_rmse_for_dim
+
+                    # Store optimized config for this scenario
+                    scenario_best_configs[scenario_name] = current_best
+                    print(f"  → Optimized RMSE for {scenario_name}: {current_rmse:.4f} m")
+
+                # Print summary of all optimized configs
+                print("\n" + "=" * 70)
+                print("OPTIMIZED CONFIGURATIONS PER SCENARIO")
+                print("=" * 70)
+                for scenario_name, config in scenario_best_configs.items():
+                    print(f"\n{scenario_name}:")
+                    for tname in tune_names:
+                        print(f"  {tname}: {[f'{v:.4g}' for v in config[tname]]}")
+
+                # Use "all_sensors" config as the main current_best for final comparison
+                if "all_sensors" in scenario_best_configs:
+                    current_best = scenario_best_configs["all_sensors"]
+                    current_rmse = baseline_rmse  # Will be recomputed below
+
+            else:
+                # ── Standard greedy coordinate descent (single scenario) ───
+                current_best = {tname: list(ESKF_TUNING_DEFAULTS[tname]) for tname in ESKF_TUNING_DEFAULTS}
+                current_rmse = baseline_rmse
+
+                for tname in tune_names:
+                    spec = ESKF_TUNING_PARAMS[tname]
+                    values = np.logspace(np.log10(spec.min), np.log10(spec.max), steps).tolist()
+
+                    for stage_idx in tune_stage_indices:
+                        stage_name = FLIGHT_STAGES[stage_idx]
+                        best_val_for_dim = current_best[tname][stage_idx]
+                        best_rmse_for_dim = current_rmse
+
+                        for val in values:
+                            run_idx += 1
+                            # Build config: current best + this (param, stage) override
+                            trial = {k: list(v) for k, v in current_best.items()}
+                            trial[tname][stage_idx] = val
+                            fcfg = _build_filter_cfg(**trial)
+
+                            df = run_filter_pipeline(base_df, fcfg)
+                            metrics = _compute_tune_metrics(df)
+                            rmse = metrics.get("pos3d_rmse_m", float("inf"))
+
                             trow = {
                                 "tuning_param": tname,
                                 "stage": stage_name,
@@ -512,35 +585,24 @@ def run_cli(argv: list[str] | None = None) -> None:
                             }
                             tune_summary_rows.append(trow)
 
-                        marker = ""
-                        if rmse < best_rmse_for_dim:
-                            best_rmse_for_dim = rmse
-                            best_val_for_dim = val
-                            marker = " ★"
+                            marker = ""
+                            if rmse < best_rmse_for_dim:
+                                best_rmse_for_dim = rmse
+                                best_val_for_dim = val
+                                marker = " ★"
 
-                        if args.sensor_failure_test:
-                            # Show worst-case scenario
-                            worst_scenario = max(
-                                scenario_metrics.items(),
-                                key=lambda x: x[1].get("pos3d_rmse_m", 0),
-                            )
-                            print(
-                                f"  [{run_idx}/{total}] {tname}/{stage_name}={val:.6g}  "
-                                f"worst_rmse={rmse:.4f} ({worst_scenario[0]}){marker}"
-                            )
-                        else:
                             print(
                                 f"  [{run_idx}/{total}] {tname}/{stage_name}={val:.6g}  "
                                 f"pos3d_rmse={rmse:.4f}{marker}"
                             )
 
-                    # Lock in this dimension's best
-                    current_best[tname][stage_idx] = best_val_for_dim
-                    current_rmse = best_rmse_for_dim
-                    print(
-                        f"  → locked {tname}/{stage_name} = {best_val_for_dim:.6g}  "
-                        f"(cumulative rmse = {current_rmse:.4f})"
-                    )
+                        # Lock in this dimension's best
+                        current_best[tname][stage_idx] = best_val_for_dim
+                        current_rmse = best_rmse_for_dim
+                        print(
+                            f"  → locked {tname}/{stage_name} = {best_val_for_dim:.6g}  "
+                            f"(cumulative rmse = {current_rmse:.4f})"
+                        )
 
         else:
             # ── OAT sensitivity analysis ─────────────────────────
