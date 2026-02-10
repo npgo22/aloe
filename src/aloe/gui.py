@@ -5,6 +5,7 @@ from typing import Any, Union
 from nicegui import run, ui
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import numpy as np
 import polars as pl
 
 from aloe.sim import (
@@ -37,6 +38,65 @@ ENV_SLIDERS = get_env_sliders()
 SENSOR_RATE_SLIDERS = get_sensor_rate_sliders()
 SENSOR_LATENCY_SLIDERS = get_sensor_latency_sliders()
 
+# ── Downsampling helper ───────────────────────────────────────────────
+_MAX_PLOT_POINTS = 2000
+
+
+def _lttb_downsample(x, y, n_out):
+    """Largest-Triangle-Three-Buckets downsampling.
+
+    Reduces a time-series to *n_out* points while preserving visual shape.
+    Returns (x_ds, y_ds) as plain lists for Plotly JSON.
+    """
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    length = len(x)
+    if length <= n_out or n_out < 3:
+        return x.tolist(), y.tolist()
+
+    out_x = np.empty(n_out, dtype=np.float64)
+    out_y = np.empty(n_out, dtype=np.float64)
+    out_x[0], out_y[0] = x[0], y[0]
+    out_x[-1], out_y[-1] = x[-1], y[-1]
+
+    bucket_size = (length - 2) / (n_out - 2)
+    a_idx = 0
+
+    for i in range(1, n_out - 1):
+        b_start = int((i - 1) * bucket_size) + 1
+        b_end = int(i * bucket_size) + 1
+        c_start = int(i * bucket_size) + 1
+        c_end = int((i + 1) * bucket_size) + 1
+        if c_end > length - 1:
+            c_end = length - 1
+
+        avg_x = np.mean(x[c_start : c_end + 1])
+        avg_y = np.mean(y[c_start : c_end + 1])
+
+        best_idx = b_start
+        max_area = -1.0
+        for j in range(b_start, min(b_end + 1, length)):
+            area = abs(
+                (x[a_idx] - avg_x) * (y[j] - out_y[0])
+                - (x[a_idx] - x[j]) * (avg_y - out_y[0])
+            )
+            if area > max_area:
+                max_area = area
+                best_idx = j
+
+        out_x[i] = x[best_idx]
+        out_y[i] = y[best_idx]
+        a_idx = best_idx
+
+    return out_x.tolist(), out_y.tolist()
+
+
+def _ds(x_series, y_series, n=_MAX_PLOT_POINTS):
+    """Convenience: downsample Polars/list series for plotting."""
+    x = x_series.to_list() if hasattr(x_series, 'to_list') else list(x_series)
+    y = y_series.to_list() if hasattr(y_series, 'to_list') else list(y_series)
+    return _lttb_downsample(x, y, n)
+
 
 def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
     """Create 3D flight path with truth, ESKF, and quantized overlays."""
@@ -46,11 +106,23 @@ def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
         df = df.filter(pl.col("time_s") <= max_time)
 
     max_alt = df["altitude_m"].max()
+
+    # Uniform downsample for 3D (preserves spatial correspondence across axes)
+    n = len(df)
+    if n > _MAX_PLOT_POINTS:
+        step = max(1, n // _MAX_PLOT_POINTS)
+        idx = list(range(0, n, step))
+        if idx[-1] != n - 1:
+            idx.append(n - 1)
+        df_ds = df[idx]
+    else:
+        df_ds = df
+
     traces = [
         go.Scatter3d(
-            x=df["position_x_m"].to_list(),
-            y=df["position_z_m"].to_list(),
-            z=df["altitude_m"].to_list(),
+            x=df_ds["position_x_m"].to_list(),
+            y=df_ds["position_z_m"].to_list(),
+            z=df_ds["altitude_m"].to_list(),
             mode="lines",
             name="Truth",
             line=dict(color="blue", width=4),
@@ -58,12 +130,12 @@ def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
     ]
 
     # ESKF estimates (if available)
-    if "eskf_pos_n" in df.columns:
+    if "eskf_pos_n" in df_ds.columns:
         traces.append(
             go.Scatter3d(
-                x=df["eskf_pos_n"].to_list(),
-                y=df["eskf_pos_e"].to_list(),
-                z=(-df["eskf_pos_d"]).to_list(),
+                x=df_ds["eskf_pos_n"].to_list(),
+                y=df_ds["eskf_pos_e"].to_list(),
+                z=(-df_ds["eskf_pos_d"]).to_list(),
                 mode="lines",
                 name="ESKF",
                 line=dict(color="red", width=3, dash="dash"),
@@ -71,12 +143,12 @@ def create_3d_figure(df, sensor_cfg: SensorConfig | None = None, max_time=None):
         )
 
     # Quantized telemetry (if available)
-    if "q_flight_pos_n_m" in df.columns:
+    if "q_flight_pos_n_m" in df_ds.columns:
         traces.append(
             go.Scatter3d(
-                x=df["q_flight_pos_n_m"].to_list(),
-                y=df["q_flight_pos_e_m"].to_list(),
-                z=df["q_flight_alt_m"].to_list(),
+                x=df_ds["q_flight_pos_n_m"].to_list(),
+                y=df_ds["q_flight_pos_e_m"].to_list(),
+                z=df_ds["q_flight_alt_m"].to_list(),
                 mode="lines",
                 name="Quantized",
                 line=dict(color="green", width=2, dash="dot"),
@@ -185,17 +257,22 @@ def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
             "Acceleration vs Time",
             "Forces vs Time",
             "Mass vs Time",
-            "",
         ),
         vertical_spacing=0.12,
         horizontal_spacing=0.10,
+        specs=[
+            [{}, {}],
+            [{}, {}],
+            [{"colspan": 2}, None],
+        ],
     )
 
     # Altitude
+    t_ds, alt_ds = _ds(df["time_s"], df["altitude_m"])
     fig.add_trace(
         go.Scatter(
-            x=df["time_s"],
-            y=df["altitude_m"],
+            x=t_ds,
+            y=alt_ds,
             mode="lines",
             name="Altitude",
             line=dict(color="green", width=2),
@@ -209,10 +286,11 @@ def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
     #     fig.add_hline(y=30000, line_dash="dash", line_color="red", annotation_text="30km Target")
 
     # Velocity
+    t_ds, vtot_ds = _ds(df["time_s"], df["velocity_total_ms"])
     fig.add_trace(
         go.Scatter(
-            x=df["time_s"],
-            y=df["velocity_total_ms"],
+            x=t_ds,
+            y=vtot_ds,
             mode="lines",
             name="Total Velocity",
             line=dict(color="red", width=2),
@@ -220,10 +298,11 @@ def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
         row=1,
         col=2,
     )
+    t_ds, vy_ds = _ds(df["time_s"], df["velocity_y_ms"])
     fig.add_trace(
         go.Scatter(
-            x=df["time_s"],
-            y=df["velocity_y_ms"],
+            x=t_ds,
+            y=vy_ds,
             mode="lines",
             name="Vertical Velocity",
             line=dict(color="orange", width=1, dash="dash"),
@@ -292,10 +371,11 @@ def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
         )
 
     # Acceleration
+    t_ds, atot_ds = _ds(df["time_s"], df["acceleration_total_ms2"])
     fig.add_trace(
         go.Scatter(
-            x=df["time_s"],
-            y=df["acceleration_total_ms2"],
+            x=t_ds,
+            y=atot_ds,
             mode="lines",
             name="Total Acceleration",
             line=dict(color="purple", width=2),
@@ -305,10 +385,11 @@ def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
     )
 
     # Add vertical acceleration component to understand the spike
+    t_ds, ay_ds = _ds(df["time_s"], df["acceleration_y_ms2"])
     fig.add_trace(
         go.Scatter(
-            x=df["time_s"],
-            y=df["acceleration_y_ms2"],
+            x=t_ds,
+            y=ay_ds,
             mode="lines",
             name="Vertical Acceleration",
             line=dict(color="magenta", width=1, dash="dash"),
@@ -407,10 +488,11 @@ def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
         )
 
     # Forces
+    t_ds, thrust_ds = _ds(df["time_s"], df["thrust_N"])
     fig.add_trace(
         go.Scatter(
-            x=df["time_s"],
-            y=df["thrust_N"],
+            x=t_ds,
+            y=thrust_ds,
             mode="lines",
             name="Thrust",
             line=dict(color="red", width=2),
@@ -418,10 +500,11 @@ def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
         row=2,
         col=2,
     )
+    t_ds, drag_ds = _ds(df["time_s"], df["drag_force_N"])
     fig.add_trace(
         go.Scatter(
-            x=df["time_s"],
-            y=df["drag_force_N"],
+            x=t_ds,
+            y=drag_ds,
             mode="lines",
             name="Drag",
             line=dict(color="blue", width=2),
@@ -461,10 +544,11 @@ def create_2d_figures(df, max_time=None, launch_delay: float = 0.0):
         )
 
     # Mass
+    t_ds, mass_ds = _ds(df["time_s"], df["mass_kg"])
     fig.add_trace(
         go.Scatter(
-            x=df["time_s"],
-            y=df["mass_kg"],
+            x=t_ds,
+            y=mass_ds,
             mode="lines",
             name="Mass",
             line=dict(color="brown", width=2),
@@ -688,10 +772,11 @@ def create_filter_error_figure(df, max_time=None, launch_delay: float = 1.0):
             (truth_vd - ekf_vd, "ESKF", "red", 3, 2),
         ]
         for err, name, color, r, c in err_pairs:
+            t_ds, e_ds = _ds(time, err)
             fig_2d.add_trace(
                 go.Scattergl(
-                    x=time,
-                    y=err,
+                    x=t_ds,
+                    y=e_ds,
                     mode="lines",
                     name=name,
                     line=dict(color=color, width=1),
@@ -718,10 +803,11 @@ def create_filter_error_figure(df, max_time=None, launch_delay: float = 1.0):
             (truth_vd - q_vd, "Quantized", "green", 3, 2),
         ]
         for err, name, color, r, c in qerr_pairs:
+            t_ds, e_ds = _ds(time, err)
             fig_2d.add_trace(
                 go.Scattergl(
-                    x=time,
-                    y=err,
+                    x=t_ds,
+                    y=e_ds,
                     mode="lines",
                     name=name,
                     line=dict(color=color, width=1),
@@ -921,7 +1007,18 @@ def index_page():
         """Run the simulation off the event loop to avoid WebSocket timeouts."""
         return await run.io_bound(_run_sim_sync)
 
+    def _client_gone() -> bool:
+        """Return True if the browser tab that owns these elements has disconnected."""
+        try:
+            if plot_3d is not None:
+                _ = plot_3d.client  # raises RuntimeError if deleted
+            return False
+        except RuntimeError:
+            return True
+
     async def _render(df=None):
+        if _client_gone():
+            return
         if df is None:
             df = full_df["df"] if full_df["df"] is not None else await _run_sim()
         t_max = None
@@ -986,6 +1083,8 @@ def index_page():
 
         async def go():
             debounce_timer["t"] = None
+            if _client_gone():
+                return
             await _run_sim()
             await _render()
             if time_slider is not None and full_df["df"] is not None:
@@ -997,7 +1096,7 @@ def index_page():
                 except (TypeError, ValueError):
                     pass  # Skip if conversion fails
 
-        debounce_timer["t"] = ui.timer(0.15, go, once=True)
+        debounce_timer["t"] = ui.timer(0.35, go, once=True)
 
     def _debounced_sensor_update():
         """Re-generate sensor data + re-run filter (faster than full sim re-run)."""
@@ -1006,6 +1105,8 @@ def index_page():
 
         async def go():
             debounce_timer["t"] = None
+            if _client_gone():
+                return
             # Keep the existing base simulation, just regenerate sensor overlay
             if full_df["df"] is not None:
 
@@ -1052,7 +1153,7 @@ def index_page():
                 full_df["df"] = await run.io_bound(_regen_sensors)
             await _render()
 
-        debounce_timer["t"] = ui.timer(0.05, go, once=True)
+        debounce_timer["t"] = ui.timer(0.2, go, once=True)
 
     def _make_param_setter(attr, target_obj=None, target_attr=None, use_sensor_update=False):
         """Return a handler that sets an attribute and triggers debounced update."""
@@ -1529,6 +1630,8 @@ def index_page():
             # -- Kick off the first sim + render asynchronously so the page
             #    loads immediately and the WebSocket stays alive. --
             async def _initial_load():
+                if _client_gone():
+                    return
                 await _run_sim()
                 if time_slider is not None and full_df["df"] is not None:
                     try:

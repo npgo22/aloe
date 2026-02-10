@@ -164,3 +164,23 @@ docker run -p 8080:8080 ghcr.io/<owner>/aloe:main
 ```sh
 python3 gen_lut.py   # writes rust/src/lut_data.rs
 ```
+
+## Wishlist
+* Harden the ESEKF to withstand sensor failures (currnetly completely falls apart if any of GPS, one of the two accelerometers, or the gyroscope fail)
+* Make the 
+* Add implementations for other sensor fusion algorithms
+* Improve state detection
+* Research ways to hoist errors into adaptive kalman filter so that bad readings may be discarded
+* Find a barometer that doesn't suck so much that the readings get killed
+* Make the simulated LIS3MDL reading useful by making it not a constant field with no attitude coupling.
+* Decouple ESEKF from gyro availability (right now predictions are not ran if the Gyro is lost)
+* Add emergency accelerometer fallback when attitude cannot be obtained
+* Use a LUT for the barometer to improve readings as the single-lapse-rate model is terrible past 11km
+* Add gating based on innovation-based fault detection:
+```python
+let normalized_innovation = innovation.norm() / s.diagonal().map(|v| v.sqrt()).norm();
+if normalized_innovation > 5.0 {
+    return; // reject this measurement
+}
+```
+* Only use the ADXL375 if the BMI088 is saturated.

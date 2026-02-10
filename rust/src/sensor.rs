@@ -43,6 +43,33 @@ fn sensor_col(
         .collect()
 }
 
+/// Like `sensor_col` but saturates output to ±`range_ms2` (m/s²), modelling
+/// the hard clipping that occurs when acceleration exceeds the sensor's
+/// measurement range (e.g. BMI088 ±24g, ADXL375 ±200g).
+fn sensor_col_saturating(
+    times: &[f64],
+    truth: &[f64],
+    sigma: f64,
+    hz: f64,
+    latency_ms: f64,
+    range_ms2: f64,
+    rng: &mut rand::rngs::StdRng,
+) -> Vec<f64> {
+    let lat_s = latency_ms / 1000.0;
+    let dist = Normal::new(0.0, sigma).unwrap();
+    times
+        .iter()
+        .zip(truth)
+        .map(|(&t, &v)| {
+            if is_sample(t, hz, lat_s) {
+                (v + dist.sample(rng)).clamp(-range_ms2, range_ms2)
+            } else {
+                f64::NAN
+            }
+        })
+        .collect()
+}
+
 /// PyO3 entry point — generates all sensor columns from trajectory arrays.
 #[pyfunction]
 #[pyo3(signature = (
@@ -119,39 +146,43 @@ pub fn add_sensor_data_rs(
     let dt = 0.01_f64;
     let dict = PyDict::new(py);
 
-    // BMI088 low-g accel
+    // BMI088 low-g accel — ±24 g range (saturates at ±235.44 m/s²)
     if bmi088_accel {
         let s = 175e-6 * 9.81 * bmi088_accel_hz.sqrt() * ns;
+        let range = 24.0 * 9.81; // ±24 g in m/s²
         dict.set_item(
             "bmi088_accel_x_ms2",
-            sensor_col(
+            sensor_col_saturating(
                 &time_s,
                 &acceleration_x_ms2,
                 s,
                 bmi088_accel_hz,
                 bmi088_accel_latency_ms,
+                range,
                 &mut rng,
             ),
         )?;
         dict.set_item(
             "bmi088_accel_y_ms2",
-            sensor_col(
+            sensor_col_saturating(
                 &time_s,
                 &acceleration_y_ms2,
                 s,
                 bmi088_accel_hz,
                 bmi088_accel_latency_ms,
+                range,
                 &mut rng,
             ),
         )?;
         dict.set_item(
             "bmi088_accel_z_ms2",
-            sensor_col(
+            sensor_col_saturating(
                 &time_s,
                 &acceleration_z_ms2,
                 s,
                 bmi088_accel_hz,
                 bmi088_accel_latency_ms,
+                range,
                 &mut rng,
             ),
         )?;
@@ -222,39 +253,43 @@ pub fn add_sensor_data_rs(
         )?;
     }
 
-    // ADXL375 high-g accel
+    // ADXL375 high-g accel — ±200 g range (saturates at ±1962 m/s²)
     if adxl375 {
         let s = 3.9e-3 * 9.81 * adxl375_hz.sqrt() * ns;
+        let range = 200.0 * 9.81; // ±200 g in m/s²
         dict.set_item(
             "adxl375_accel_x_ms2",
-            sensor_col(
+            sensor_col_saturating(
                 &time_s,
                 &acceleration_x_ms2,
                 s,
                 adxl375_hz,
                 adxl375_latency_ms,
+                range,
                 &mut rng,
             ),
         )?;
         dict.set_item(
             "adxl375_accel_y_ms2",
-            sensor_col(
+            sensor_col_saturating(
                 &time_s,
                 &acceleration_y_ms2,
                 s,
                 adxl375_hz,
                 adxl375_latency_ms,
+                range,
                 &mut rng,
             ),
         )?;
         dict.set_item(
             "adxl375_accel_z_ms2",
-            sensor_col(
+            sensor_col_saturating(
                 &time_s,
                 &acceleration_z_ms2,
                 s,
                 adxl375_hz,
                 adxl375_latency_ms,
+                range,
                 &mut rng,
             ),
         )?;
