@@ -52,7 +52,7 @@ pub struct SensorData {
     pub accel_meas: Vec<Vector3<f64>>,
     pub gyro_meas: Vec<Vector3<f64>>,
     pub mag_meas: Vec<Vector3<f64>>,
-    pub baro_alt: Vec<f64>,
+    pub baro_pressure: Vec<f64>,
     pub gps_pos: Vec<Vector3<f64>>,
     pub gps_vel: Vec<Vector3<f64>>,
 }
@@ -66,7 +66,7 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
         accel_meas: Vec::with_capacity(n),
         gyro_meas: Vec::with_capacity(n),
         mag_meas: Vec::with_capacity(n),
-        baro_alt: Vec::with_capacity(n),
+        baro_pressure: Vec::with_capacity(n),
         gps_pos: Vec::with_capacity(n),
         gps_vel: Vec::with_capacity(n),
     };
@@ -118,13 +118,16 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
             data.mag_meas.push(Vector3::zeros());
         }
 
-        // 4. Barometer (Pressure Altitude)
+        // 4. Barometer (Pressure)
         if cfg.baro_enabled {
             let true_alt = -sim.pos[i].z;
-            let meas_alt = true_alt + d_baro.sample(&mut rng);
-            data.baro_alt.push(meas_alt);
+            let p0 = 101325.0; // Pa
+            let h_scale = 8500.0; // m
+            let true_pressure = p0 * (-true_alt / h_scale).exp();
+            let meas_pressure = true_pressure + d_baro.sample(&mut rng);
+            data.baro_pressure.push(meas_pressure);
         } else {
-            data.baro_alt.push(0.0);
+            data.baro_pressure.push(101325.0);
         }
 
         // 5. GPS

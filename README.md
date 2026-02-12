@@ -1,33 +1,6 @@
 # Aloe
 
-A hobby-rocket flight simulator with sensor fusion (ES-EKF) and telemetry quantization. Fully implemented in Rust with a clean separation between `no_std` embedded code and standard library tools.
-
-## Architecture
-
-The project is organized as a Cargo workspace:
-
-### `crates/aloe-core` (no_std)
-
-Core estimation library for microcontroller deployment:
-- **ESKF**: Error-State Kalman Filter for state estimation
-- **Quantization**: Flight/recovery packet compression for telemetry
-- **State Machine**: Flight phase detection (pad, burn, coasting, recovery)
-- **LUT Data**: Atmosphere lookup tables
-
-### `crates/aloe-sim` (std)
-
-Simulation and modeling library:
-- **Simulation**: 3-DoF rocket flight physics
-- **Sensor Modeling**: Realistic sensor data generation with noise and latency
-- **Parameters**: Complete parameter specifications
-
-### `crates/aloe-cli`
-
-Command-line interface for batch simulations.
-
-### `crates/aloe`
-
-Main binary with `cli` and `gui` subcommands.
+A flight simulator with "A 15-state Error-State Kalman Filter featuring stage-conditioned parameter adaptation via greedy coordinate descent, Mahalanobis-distance innovation gating for fault detection, ISA-76 Standard Atmosphere modeling for high-altitude barometric compensation, and robust multi-sensor fusion capable of operating in GPS-denied, IMU-degraded, or barometer-only configurations" complete with telemetry quantization. Python + Rust (via maturin/PyO3).
 
 ## Quick Start
 

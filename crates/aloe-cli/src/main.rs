@@ -308,7 +308,8 @@ fn build_rocket_params(args: &Args) -> RocketParams {
         // Approximate inertia for a cylinder: I = 1/12 * M * L^2
         // Assuming Length = 3.0m
         inertia_tensor: Vector3::new(0.1, 15.0, 15.0),
-        cg_location: 1.5,
+        cg_full: 1.5,
+        cg_empty: 1.4,
         cp_location: 2.0, // Stable (behind CG)
         ref_area: args.ref_area,
         drag_coeff_axial: args.drag_coeff,
@@ -320,6 +321,7 @@ fn build_rocket_params(args: &Args) -> RocketParams {
             (args.burn_time + 0.01, 0.0),
         ],
         burn_time: args.burn_time,
+        isp: 200.0,
         nozzle_location: 3.0,
         gravity: args.gravity,
         air_density_sea_level: args.air_density,

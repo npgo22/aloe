@@ -60,6 +60,7 @@ dependencies = [
  "aloe-core",
  "aloe-sim",
  "axum",
+ "log",
  "nalgebra",
  "serde",
  "serde_json",
@@ -74,6 +75,7 @@ version = "0.1.0"
 dependencies = [
  "aloe-core",
  "anyhow",
+ "approx",
  "libm",
  "nalgebra",
  "rand 0.10.0",

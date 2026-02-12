@@ -53,12 +53,12 @@ jobs:
             args: ""
           - name: 12km-preset
             args: >-
-              --dry-mass 30 --propellant-mass 60 --thrust 6000 --burn-time 12
-              --drag-coeff 0.4100 --ref-area 0.0324 --wind-speed 100 --wind-speed-z 2
+              --dry-mass 25 --propellant-mass 15 --thrust 3500 --burn-time 6
+              --drag-coeff 0.42 --ref-area 0.02 --wind-speed 8 --wind-speed-z 1
           - name: 30km-preset
             args: >-
-              --dry-mass 1000 --propellant-mass 11000 --thrust 1100000 --burn-time 2100
-              --drag-coeff 0.40 --ref-area 0.0324 --wind-speed 3 --wind-speed-z 0
+              --dry-mass 80 --propellant-mass 120 --thrust 18000 --burn-time 12
+              --drag-coeff 0.38 --ref-area 0.045 --wind-speed 5 --wind-speed-z 0
           - name: heavy-low-thrust
             args: >-
               --dry-mass 1000 --propellant-mass 11000 --thrust 4000 --burn-time 20

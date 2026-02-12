@@ -1,30 +1,16 @@
-// Global functions for Alpine expressions (defined first for availability)
-window.formatStat = function(val) {
-    if (val === undefined || val === null) return '-';
-    if (Math.abs(val) < 0.001) return val.toExponential(3);
-    return val.toFixed(4);
-};
-
-window.formatInt = function(val) {
-    if (val === undefined || val === null) return '-';
-    return Math.round(val).toString();
-};
-
 document.addEventListener('alpine:init', () => {
     Alpine.data('simulator', () => ({
-        simulationData: {
-            error_stats: {
-                // Initialize with default values to prevent undefined errors
-                pos_n_min: 0, pos_n_max: 0, pos_n_mean: 0, pos_n_std: 0, pos_n_rmse: 0,
-                pos_e_min: 0, pos_e_max: 0, pos_e_mean: 0, pos_e_std: 0, pos_e_rmse: 0,
-                pos_d_min: 0, pos_d_max: 0, pos_d_mean: 0, pos_d_std: 0, pos_d_rmse: 0,
-                vel_n_min: 0, vel_n_max: 0, vel_n_mean: 0, vel_n_std: 0, vel_n_rmse: 0,
-                vel_e_min: 0, vel_e_max: 0, vel_e_mean: 0, vel_e_std: 0, vel_e_rmse: 0,
-                vel_d_min: 0, vel_d_max: 0, vel_d_mean: 0, vel_d_std: 0, vel_d_rmse: 0,
-                pos_3d_min: 0, pos_3d_max: 0, pos_3d_mean: 0, pos_3d_std: 0, pos_3d_rmse: 0
-            }
-        },
+        simulationData: null,
         isReconciling: false,
+        formatStat(val) {
+            if (val === undefined || val === null) return '-';
+            if (Math.abs(val) < 0.001) return val.toExponential(3);
+            return val.toFixed(4);
+        },
+        formatInt(val) {
+            if (val === undefined || val === null) return '-';
+            return Math.round(val).toString();
+        },
         init() {
             // Auto-run on init
             this.runSim();
@@ -61,37 +47,20 @@ document.addEventListener('alpine:init', () => {
             
             const checkboxes = form.querySelectorAll('input[type=checkbox]');
             checkboxes.forEach(cb => {
-                params.append(cb.name, cb.checked ? 'true' : 'false');
+                if (!cb.checked) {
+                    params.append(cb.name, 'false');
+                }
             });
             
             try {
                 const response = await fetch('/api/simulate?' + params);
-
-                // HTTP-level errors
-                if (!response.ok) {
-                    console.error('Server returned', response.status);
-                    this.simulationData = { error_message: `HTTP ${response.status}` };
-                    this.isReconciling = false;
-                    return;
-                }
-
                 this.simulationData = await response.json();
-
-                // Backend returned a structured failure
-                if (this.simulationData && this.simulationData.success === false) {
-                    console.error('Simulation failed:', this.simulationData.error_message || 'unknown');
-                    // show error in console and stop; UI can read simulationData.error_message
-                    this.isReconciling = false;
-                    return;
-                }
-
                 this.$nextTick(() => {
                     this.renderAllCharts();
                     this.isReconciling = false;
                 });
             } catch (error) {
                 console.error('Simulation error:', error);
-                this.simulationData = { error_message: String(error) };
                 this.isReconciling = false;
             }
         },
@@ -105,14 +74,17 @@ document.addEventListener('alpine:init', () => {
             this.renderMass();
             this.renderAccel();
             this.renderGyro();
-            this.populateErrorTable();
+            this.renderMag();
+            this.renderGps();
+            this.renderAdxl();
+            this.renderBaro();
         },
         renderTrajectory3D() {
             const data = this.simulationData;
             
             const trueTrace = {
-                x: data.position_x,
-                y: data.position_y,
+                x: data.position_y,
+                y: data.position_x,
                 z: data.position_z,
                 mode: 'lines',
                 type: 'scatter3d',
@@ -122,9 +94,9 @@ document.addEventListener('alpine:init', () => {
             };
             
             const estTrace = {
-                x: data.filter_data.est_pos_x,
-                y: data.filter_data.est_pos_y,
-                z: data.filter_data.est_pos_z,
+                x: data.filter_data.est_pos_y,
+                y: data.filter_data.est_pos_x,
+                z: data.filter_data.est_pos_z.map(z => -z),
                 mode: 'lines',
                 type: 'scatter3d',
                 name: 'ESKF Estimate',
@@ -133,12 +105,12 @@ document.addEventListener('alpine:init', () => {
             };
             
             const quantTrace = {
-                x: data.position_x.map((x, i) => x + (Math.sin(i * 0.1) * 0.5)),
-                y: data.position_y.map((y, i) => y + (Math.cos(i * 0.1) * 0.5)),
-                z: data.position_z,
+                x: data.filter_data.quantized_est_pos_y,
+                y: data.filter_data.quantized_est_pos_x,
+                z: data.filter_data.quantized_est_pos_z,
                 mode: 'lines',
                 type: 'scatter3d',
-                name: 'Quantized Path',
+                name: 'Quantized ESKF',
                 line: { color: '#2196F3', width: 2, dash: 'dot' },
                 opacity: 0.6
             };
@@ -147,8 +119,10 @@ document.addEventListener('alpine:init', () => {
             const stateColors = { 
                 Pad: '#4CAF50', 
                 Ascent: '#FF9800',
+                Burn: '#FF5722',
                 Coast: '#2196F3', 
                 Descent: '#9C27B0',
+                Recovery: '#9C27B0',
                 Landed: '#795548'
             };
             
@@ -157,7 +131,7 @@ document.addEventListener('alpine:init', () => {
             const seenTruthStates = new Set();
             if (data.state_changes_sim) {
                 data.state_changes_sim.forEach(sc => {
-                    const stateName = sc.state;
+                    const stateName = sc.state || sc.description;
                     if (!seenTruthStates.has(stateName)) {
                         seenTruthStates.add(stateName);
                         uniqueTruthStates.push({...sc, state: stateName});
@@ -166,28 +140,30 @@ document.addEventListener('alpine:init', () => {
             }
             
             // Truth state markers
-            const truthStateTraces = uniqueTruthStates.map(sc => {
-                const idx = Math.min(Math.floor(sc.time / 0.05), data.position_x.length - 1);
-                return {
-                    x: [data.position_x[idx] || 0],
-                    y: [data.position_y[idx] || 0],
-                    z: [data.position_z[idx] || 0],
-                    mode: 'markers+text',
-                    type: 'scatter3d',
-                    name: `Sim: ${sc.state}`,
-                    text: [sc.state],
-                    textposition: 'top center',
-                    textfont: { size: 10, color: stateColors[sc.state] || '#666' },
-                    marker: { size: 12, color: stateColors[sc.state] || '#666', symbol: 'circle', line: { color: '#000', width: 2 } }
-                };
-            });
+            const truthStateTraces = uniqueTruthStates
+                .filter(sc => sc.state !== 'Recovery')
+                .map(sc => {
+                    const idx = data.time.findIndex(t => t >= sc.time) !== -1 ? data.time.findIndex(t => t >= sc.time) : data.time.length - 1;
+                    return {
+                        x: [data.position_y[idx] || 0],
+                        y: [data.position_x[idx] || 0],
+                        z: [data.position_z[idx] || 0],
+                        mode: 'markers+text',
+                        type: 'scatter3d',
+                        name: `Truth: ${sc.state}`,
+                        text: [sc.state],
+                        textposition: 'top center',
+                        textfont: { size: 10, color: stateColors[sc.state] || '#666' },
+                        marker: { size: 12, color: stateColors[sc.state] || '#666', symbol: 'circle', line: { color: '#000', width: 2 } }
+                    };
+                });
             
             // ESKF state markers
             const uniqueESKFStates = [];
             const seenESKFStates = new Set();
             if (data.state_changes_eskf) {
                 data.state_changes_eskf.forEach(sc => {
-                    const stateName = sc.state;
+                    const stateName = sc.state || sc.description;
                     if (!seenESKFStates.has(stateName)) {
                         seenESKFStates.add(stateName);
                         uniqueESKFStates.push({...sc, state: stateName});
@@ -195,27 +171,29 @@ document.addEventListener('alpine:init', () => {
                 });
             }
             
-            const eskfStateTraces = uniqueESKFStates.map(sc => {
-                const idx = Math.min(Math.floor(sc.time / 0.05), data.filter_data.est_pos_x.length - 1);
-                return {
-                    x: [data.filter_data.est_pos_x[idx] || 0],
-                    y: [data.filter_data.est_pos_y[idx] || 0],
-                    z: [data.filter_data.est_pos_z[idx] || 0],
-                    mode: 'markers+text',
-                    type: 'scatter3d',
-                    name: `ESKF: ${sc.state}`,
-                    text: [sc.state],
-                    textposition: 'bottom center',
-                    textfont: { size: 10, color: stateColors[sc.state] || '#666' },
-                    marker: { size: 10, color: stateColors[sc.state] || '#666', symbol: 'diamond', line: { color: '#000', width: 2 } }
-                };
-            });
+            const eskfStateTraces = uniqueESKFStates
+                .filter(sc => sc.state !== 'Recovery')
+                .map(sc => {
+                    const idx = data.time.findIndex(t => t >= sc.time) !== -1 ? data.time.findIndex(t => t >= sc.time) : data.time.length - 1;
+                    return {
+                        x: [data.filter_data.est_pos_y[idx] || 0],
+                        y: [data.filter_data.est_pos_x[idx] || 0],
+                        z: [-(data.filter_data.est_pos_z[idx] || 0)],
+                        mode: 'markers+text',
+                        type: 'scatter3d',
+                        name: `ESKF: ${sc.state}`,
+                        text: [sc.state],
+                        textposition: 'bottom center',
+                        textfont: { size: 10, color: stateColors[sc.state] || '#666' },
+                        marker: { size: 10, color: stateColors[sc.state] || '#666', symbol: 'diamond', line: { color: '#000', width: 2 } }
+                    };
+                });
             
             const allTraces = [trueTrace, estTrace, quantTrace, ...truthStateTraces, ...eskfStateTraces];
             
-            const xRange = [Math.min(...data.position_x) - 50, Math.max(...data.position_x) + 50];
-            const yRange = [Math.min(...data.position_y) - 50, Math.max(...data.position_y) + 50];
-            const zRange = [0, Math.min(Math.max(...data.position_z) * 1.1, 50000)];
+            const xRange = [Math.min(...data.position_y) - 50, Math.max(...data.position_y) + 50];
+            const yRange = [Math.min(...data.position_x) - 50, Math.max(...data.position_x) + 50];
+            const zRange = [0, Math.max(...data.position_z) * 1.1];
             
             const layout = {
                 title: {
@@ -227,8 +205,7 @@ document.addEventListener('alpine:init', () => {
                     yaxis: { title: 'North (m)', range: yRange, gridcolor: '#e5e5e5' },
                     zaxis: { title: 'Altitude (m)', range: zRange, gridcolor: '#e5e5e5' },
                     camera: { eye: { x: 1.5, y: 1.5, z: 0.8 } },
-                    aspectmode: 'manual',
-                    aspectratio: { x: 1, y: 1, z: 2 }
+                    aspectmode: 'cube'
                 },
                 paper_bgcolor: 'white',
                 plot_bgcolor: 'white',
@@ -241,11 +218,16 @@ document.addEventListener('alpine:init', () => {
         },
         renderAltitude() {
             const data = this.simulationData;
-            this.render2DChart('chart-altitude', data.time, data.altitude, null, 'Altitude vs Time', 'Time (s)', 'Altitude (m)');
+            console.log("Altitude data:", {
+                length: data.altitude?.length,
+                max: Math.max(...(data.altitude || [0])),
+                last: data.altitude?.[data.altitude.length - 1]
+            });
+            this.render2DChart('chart-altitude', data.time, data.altitude, data.filter_data.est_pos_z, 'Altitude vs Time', 'Time (s)', 'Altitude (m)');
         },
         renderVelocity() {
             const data = this.simulationData;
-            this.render2DChart('chart-velocity', data.time, data.velocity, null, 'Velocity vs Time', 'Time (s)', 'Velocity (m/s)');
+            this.render2DChart('chart-velocity', data.time, data.velocity, data.filter_data.est_vel_mag, 'Velocity vs Time', 'Time (s)', 'Velocity (m/s)');
         },
         renderAcceleration() {
             const data = this.simulationData;
@@ -279,15 +261,7 @@ document.addEventListener('alpine:init', () => {
             }
             
             const data = this.simulationData;
-            const uniqueStates = [];
-            const seen = new Set();
-            data.state_changes_sim.forEach(sc => {
-                if (!seen.has(sc.state)) {
-                    seen.add(sc.state);
-                    uniqueStates.push(sc);
-                }
-            });
-            const shapes = uniqueStates.map(sc => ({
+            const shapes = data.state_changes_sim.map(sc => ({
                 type: 'line',
                 x0: sc.time,
                 x1: sc.time,
@@ -296,23 +270,10 @@ document.addEventListener('alpine:init', () => {
                 line: { color: '#9C27B0', width: 2, dash: 'dash' }
             }));
             
-            const annotations = uniqueStates.map((sc, idx) => ({
-                x: sc.time,
-                y: Math.max(...trueData) * (0.9 - idx * 0.15),
-                text: sc.description,
-                showarrow: true,
-                arrowhead: 2,
-                ax: 40,
-                ay: 0,
-                bgcolor: 'rgba(255,255,255,0.9)',
-                bordercolor: '#9C27B0',
-                borderwidth: 1
-            }));
-            
             const annotations = data.state_changes_sim.map((sc, idx) => ({
                 x: sc.time,
                 y: Math.max(...trueData) * (0.9 - idx * 0.15),
-                text: sc.state,
+                text: sc.state || sc.description,
                 showarrow: true,
                 arrowhead: 2,
                 ax: 40,
@@ -358,7 +319,7 @@ document.addEventListener('alpine:init', () => {
             
             const layout = {
                 title: {
-                    text: 'Accelerometer',
+                    text: 'BMI088 Accelerometer',
                     font: { size: 14, color: '#1c1917' }
                 },
                 xaxis: { 
@@ -390,7 +351,7 @@ document.addEventListener('alpine:init', () => {
             
             const layout = {
                 title: {
-                    text: 'Gyroscope',
+                    text: 'BMI088 Gyroscope',
                     font: { size: 14, color: '#1c1917' }
                 },
                 xaxis: { 
@@ -410,31 +371,200 @@ document.addEventListener('alpine:init', () => {
             
             Plotly.newPlot('chart-gyro', traces, layout, {responsive: true});
         },
-        populateErrorTable() {
+        renderMag() {
             const data = this.simulationData;
-            if (!data.error_stats) return;
-            const table = document.getElementById('error-table');
-            const tbody = table.querySelector('tbody');
-            tbody.innerHTML = '';
-            const stats = data.error_stats;
-            const rows = [
-                ['Position N', stats.pos_n_min, stats.pos_n_max, stats.pos_n_mean, stats.pos_n_std, stats.pos_n_rmse],
-                ['Position E', stats.pos_e_min, stats.pos_e_max, stats.pos_e_mean, stats.pos_e_std, stats.pos_e_rmse],
-                ['Position D', stats.pos_d_min, stats.pos_d_max, stats.pos_d_mean, stats.pos_d_std, stats.pos_d_rmse],
-                ['Velocity N', stats.vel_n_min, stats.vel_n_max, stats.vel_n_mean, stats.vel_n_std, stats.vel_n_rmse],
-                ['Velocity E', stats.vel_e_min, stats.vel_e_max, stats.vel_e_mean, stats.vel_e_std, stats.vel_e_rmse],
-                ['Velocity D', stats.vel_d_min, stats.vel_d_max, stats.vel_d_mean, stats.vel_d_std, stats.vel_d_rmse],
-                ['3D Position', stats.pos_3d_min, stats.pos_3d_max, stats.pos_3d_mean, stats.pos_3d_std, stats.pos_3d_rmse],
+            const sensor = data.sensor_data;
+            
+            const traces = [
+                { x: data.time, y: sensor.mag_x, name: 'Mag X', line: { color: '#E91E63', width: 1.5 } },
+                { x: data.time, y: sensor.mag_y, name: 'Mag Y', line: { color: '#673AB7', width: 1.5 } },
+                { x: data.time, y: sensor.mag_z, name: 'Mag Z', line: { color: '#3F51B5', width: 1.5 } }
             ];
-            rows.forEach(row => {
-                const tr = document.createElement('tr');
-                row.forEach(cell => {
-                    const td = document.createElement('td');
-                    td.textContent = this.formatStat(cell);
-                    tr.appendChild(td);
-                });
-                tbody.appendChild(tr);
-            });
+            
+            const layout = {
+                title: {
+                    text: 'LIS3MDL Magnetometer',
+                    font: { size: 14, color: '#1c1917' }
+                },
+                xaxis: { 
+                    title: { text: 'Time (s)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                yaxis: { 
+                    title: { text: 'Magnetic Field (Gauss)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                paper_bgcolor: 'white',
+                plot_bgcolor: 'white',
+                showlegend: true,
+                legend: { x: 1, y: 1, xanchor: 'right' },
+                margin: { l: 60, r: 40, t: 50, b: 50 }
+            };
+            
+            Plotly.newPlot('chart-mag', traces, layout, {responsive: true});
+        },
+        renderGps() {
+            const data = this.simulationData;
+            const sensor = data.sensor_data;
+            
+            const traces = [
+                { x: data.time, y: sensor.gps_x, name: 'GPS X', line: { color: '#009688', width: 1.5 } },
+                { x: data.time, y: sensor.gps_y, name: 'GPS Y', line: { color: '#FF5722', width: 1.5 } },
+                { x: data.time, y: sensor.gps_z, name: 'GPS Z', line: { color: '#795548', width: 1.5 } },
+                { x: data.time, y: sensor.gps_vel_x, name: 'GPS Vel X', line: { color: '#607D8B', width: 1.5 }, yaxis: 'y2' },
+                { x: data.time, y: sensor.gps_vel_y, name: 'GPS Vel Y', line: { color: '#8BC34A', width: 1.5 }, yaxis: 'y2' },
+                { x: data.time, y: sensor.gps_vel_z, name: 'GPS Vel Z', line: { color: '#FFC107', width: 1.5 }, yaxis: 'y2' }
+            ];
+            
+            const layout = {
+                title: {
+                    text: 'GPS Position & Velocity',
+                    font: { size: 14, color: '#1c1917' }
+                },
+                xaxis: { 
+                    title: { text: 'Time (s)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                yaxis: { 
+                    title: { text: 'Position (m)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                yaxis2: {
+                    title: { text: 'Velocity (m/s)', font: { size: 12 } },
+                    overlaying: 'y',
+                    side: 'right',
+                    gridcolor: '#e5e5e5'
+                },
+                paper_bgcolor: 'white',
+                plot_bgcolor: 'white',
+                showlegend: true,
+                legend: { x: 1, y: 1, xanchor: 'right' },
+                margin: { l: 60, r: 40, t: 50, b: 50 }
+            };
+            
+            Plotly.newPlot('chart-gps', traces, layout, {responsive: true});
+        },
+        renderAdxl() {
+            const data = this.simulationData;
+            const sensor = data.sensor_data;
+            
+            // Chart for Y and Z
+            const tracesYz = [
+                { x: data.time, y: sensor.adxl_y, name: 'ADXL375 Y', line: { color: '#2196F3', width: 1.5 } },
+                { x: data.time, y: sensor.adxl_z, name: 'ADXL375 Z', line: { color: '#4CAF50', width: 1.5 } }
+            ];
+            
+            const layoutYz = {
+                title: {
+                    text: 'ADXL375 Accelerometer (Y & Z)',
+                    font: { size: 14, color: '#1c1917' }
+                },
+                xaxis: { 
+                    title: { text: 'Time (s)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                yaxis: { 
+                    title: { text: 'Acceleration (m/s²)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                paper_bgcolor: 'white',
+                plot_bgcolor: 'white',
+                showlegend: true,
+                legend: { x: 1, y: 1, xanchor: 'right' },
+                margin: { l: 60, r: 40, t: 50, b: 50 }
+            };
+            
+            Plotly.newPlot('chart-adxl-xy', tracesYz, layoutYz, {responsive: true});
+            
+            // Chart for X
+            const tracesX = [
+                { x: data.time, y: sensor.adxl_x, name: 'ADXL375 X', line: { color: '#FF5722', width: 1.5 } }
+            ];
+            
+            const layoutX = {
+                title: {
+                    text: 'ADXL375 Accelerometer (X)',
+                    font: { size: 14, color: '#1c1917' }
+                },
+                xaxis: { 
+                    title: { text: 'Time (s)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                yaxis: { 
+                    title: { text: 'Acceleration (m/s²)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                paper_bgcolor: 'white',
+                plot_bgcolor: 'white',
+                showlegend: true,
+                legend: { x: 1, y: 1, xanchor: 'right' },
+                margin: { l: 60, r: 40, t: 50, b: 50 }
+            };
+            
+            Plotly.newPlot('chart-adxl-z', tracesX, layoutX, {responsive: true});
+        },
+        renderBaro() {
+            const data = this.simulationData;
+            const sensor = data.sensor_data;
+            
+            // Calculate altitude from pressure
+            const p0 = 101325.0;
+            const h_scale = 8500.0;
+            const baro_alt = sensor.baro_pressure.map(p => h_scale * Math.log(p0 / p));
+            
+            // Chart for Pressure
+            const tracesPressure = [
+                { x: data.time, y: sensor.baro_pressure, name: 'MS5611 Pressure', line: { color: '#9C27B0', width: 1.5 } }
+            ];
+            
+            const layoutPressure = {
+                title: {
+                    text: 'MS5611 Barometer Pressure',
+                    font: { size: 14, color: '#1c1917' }
+                },
+                xaxis: { 
+                    title: { text: 'Time (s)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                yaxis: { 
+                    title: { text: 'Pressure (Pa)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                paper_bgcolor: 'white',
+                plot_bgcolor: 'white',
+                showlegend: true,
+                legend: { x: 1, y: 1, xanchor: 'right' },
+                margin: { l: 60, r: 40, t: 50, b: 50 }
+            };
+            
+            Plotly.newPlot('chart-baro-pressure', tracesPressure, layoutPressure, {responsive: true});
+            
+            // Chart for Calculated Altitude
+            const tracesAlt = [
+                { x: data.time, y: baro_alt, name: 'MS5611 Calculated Altitude', line: { color: '#FF9800', width: 1.5 } }
+            ];
+            
+            const layoutAlt = {
+                title: {
+                    text: 'MS5611 Barometer Calculated Altitude',
+                    font: { size: 14, color: '#1c1917' }
+                },
+                xaxis: { 
+                    title: { text: 'Time (s)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                yaxis: { 
+                    title: { text: 'Altitude (m)', font: { size: 12 } }, 
+                    gridcolor: '#e5e5e5' 
+                },
+                paper_bgcolor: 'white',
+                plot_bgcolor: 'white',
+                showlegend: true,
+                legend: { x: 1, y: 1, xanchor: 'right' },
+                margin: { l: 60, r: 40, t: 50, b: 50 }
+            };
+            
+            Plotly.newPlot('chart-baro-altitude', tracesAlt, layoutAlt, {responsive: true});
         }
     }));
 });
@@ -442,10 +572,10 @@ document.addEventListener('alpine:init', () => {
 // Rocket presets
 const rocketPresets = {
     '30km': {
-        dry_mass: 20,
-        propellant_mass: 750,
-        thrust: 160000,
-        burn_time: 10,
+        dry_mass: 50,
+        propellant_mass: 150,
+        thrust: 15000,
+        burn_time: 25,
         drag_coeff: 0.40,
         ref_area: 0.0324,
         wind_north: 3,

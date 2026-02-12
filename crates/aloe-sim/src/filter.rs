@@ -18,6 +18,7 @@ pub struct FilterResult {
 pub struct FilterConfig {
     pub ground_pressure_mbar: f64,
     pub mag_declination_deg: f64,
+    pub mag_dip_deg: f64,
     pub home_lat_deg: f64,
     pub home_lon_deg: f64,
     pub home_alt_m: f64,
@@ -81,6 +82,7 @@ impl FilterConfig {
         serde_json::json!({
             "ground_pressure_mbar": self.ground_pressure_mbar,
             "mag_declination_deg": self.mag_declination_deg,
+            "mag_dip_deg": self.mag_dip_deg,
             "home_lat_deg": self.home_lat_deg,
             "home_lon_deg": self.home_lon_deg,
             "home_alt_m": self.home_alt_m,
@@ -125,6 +127,7 @@ impl Default for FilterConfig {
         Self {
             ground_pressure_mbar: 1013.25,
             mag_declination_deg: 0.0,
+            mag_dip_deg: 60.0,
             home_lat_deg: 35.0,
             home_lon_deg: -106.0,
             home_alt_m: 1500.0,
@@ -152,6 +155,7 @@ pub fn run_filter(
     let mut eskf = RocketEsKf::new(
         (config.ground_pressure_mbar * 100.0) as f32,
         config.mag_declination_deg as f32,
+        config.mag_dip_deg as f32,
         tuning,
     );
     eskf.set_home_location(
@@ -199,10 +203,8 @@ pub fn run_filter(
         }
 
         // Baro
-        let baro_alt = sensor_data.baro_alt[i];
-        if baro_alt.is_finite() {
-            // Inverse of the simple pressure model: P = P0 * (1 - H/44330)^5.255
-            let pressure = 101325.0 * (1.0 - (baro_alt / 44330.0)).powf(5.255);
+        let pressure = sensor_data.baro_pressure[i];
+        if pressure.is_finite() {
             eskf.update_baro(pressure as f32);
         }
 
@@ -213,11 +215,21 @@ pub fn run_filter(
             // Approx conversion: 1 deg lat ~ 111,111 m
             let lat = gps_pos.x / 111111.0;
             let lon = gps_pos.y / (111111.0 * 1.0_f64.cos());
-            let alt = -gps_pos.z; // NED Z is down
+            let alt = -gps_pos.z; // GPS Altitude usually noisy
+
+            let lat_deg = config.home_lat_deg + lat;
+            let lon_deg = config.home_lon_deg + lon;
+            let alt_msl = config.home_alt_m + alt;
 
             let vel_f32 = Vector3::new(gps_vel.x as f32, gps_vel.y as f32, gps_vel.z as f32);
 
-            eskf.update_gps(lat as f32, lon as f32, alt as f32, vel_f32, t_us);
+            eskf.update_gps(
+                lat_deg as f32,
+                lon_deg as f32,
+                alt_msl as f32,
+                vel_f32,
+                t_us,
+            );
         }
 
         // Step the state machine and switch tuning
@@ -226,11 +238,28 @@ pub fn run_filter(
         } else {
             0.0
         };
+        // Compute vertical acceleration (NED down = positive) using finite difference
+        // accel_down = d/dt(velocity_down). Use previous filter velocity if available.
+        let accel_down = if i > 0 {
+            let prev_vz = vel_out
+                .last()
+                .map(|v: &Vector3<f64>| v.z as f32)
+                .unwrap_or(eskf.state.velocity.z as f32);
+            let dt_f32 = if dt > 0.0 { dt as f32 } else { 0.0 };
+            if dt_f32 > 0.0 {
+                (eskf.state.velocity.z as f32 - prev_vz) / dt_f32
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
         let input = StateInput {
             time: t as f32,
             altitude: -eskf.state.position.z as f32, // AGL up
             velocity_down: eskf.state.velocity.z as f32, // NED D
-            accel_down: 0.0,                         // TODO: compute accel
+            accel_down,
         };
         let flight_state = state_machine.update(input, dt as f32);
         let tuning_stage = match flight_state {
