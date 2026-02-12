@@ -10,7 +10,7 @@ on:
       tune_steps:
         description: "Steps per tuning parameter (log-spaced)"
         type: number
-        default: 100
+        default: 400
       tune_stages:
         description: "Stages to sweep (space-separated, default: all)"
         type: string
@@ -39,8 +39,8 @@ jobs:
   # ── Greedy coordinate descent with parallel matrix ───────────────
   # Matrix runs in parallel across:
   # - 8 rocket configurations
-  # - 6 noise scales (1, 2, 4, 8, 16, 32)
-  # - 3 seeds (42, 69, 23)
+  # - 20 noise scales
+  # - 5 seeds
   # Total: 144 parallel jobs
   greedy:
     needs: build
@@ -77,8 +77,8 @@ jobs:
             args: >-
               --dry-mass 2100 --propellant-mass 200 --thrust 8000 --burn-time 30
               --drag-coeff 0.100 --ref-area 0.04
-        noise_scale: [1, 2, 4, 8, 16, 32]
-        seed: [42, 69, 23]
+        noise_scale: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        seed: [42, 69, 23, 18, 22]
 
     steps:
       - uses: actions/checkout@v4
