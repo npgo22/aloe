@@ -1,0 +1,17 @@
+body {
+    font-family: system-ui, -apple-system, sans-serif;
+}
+
+.tab-active {
+    background-color: #44403c;
+    color: #fafaf9;
+}
+
+.tab-inactive {
+    background-color: #e7e5e4;
+    color: #57534e;
+}
+
+.tab-inactive:hover {
+    background-color: #d6d3d1;
+}

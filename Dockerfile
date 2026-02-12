@@ -1,37 +1,25 @@
-# -- Build stage: compile Rust extension with maturin --
-FROM python:3.13-slim AS builder
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl build-essential pkg-config && \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable && \
-    rm -rf /var/lib/apt/lists/*
-
-ENV PATH="/root/.cargo/bin:${PATH}"
+# Build stage
+FROM rust:1.80-slim AS builder
 
 WORKDIR /app
 
-# Install maturin
-RUN pip install --no-cache-dir maturin
+# Copy source
+COPY . .
 
-# Copy Rust source first (better layer caching)
-COPY rust/ rust/
-COPY pyproject.toml .
-COPY README.md .
-COPY src/ src/
+# Build release binary
+RUN cargo build --release
 
-# Build wheel
-RUN maturin build --release --out dist
+# Runtime stage
+FROM debian:bookworm-slim
 
-# -- Runtime stage --
-FROM python:3.13-slim
+# Install ca-certificates for HTTPS if needed
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+# Copy the binary
+COPY --from=builder /app/target/release/aloe /usr/local/bin/aloe
 
-COPY --from=builder /app/dist/*.whl /tmp/
-
-# Install the built wheel (pulls in all dependencies)
-RUN pip install --no-cache-dir /tmp/*.whl && rm -rf /tmp/*.whl
-
+# Expose port for GUI
 EXPOSE 8080
 
-ENTRYPOINT ["python", "-m", "aloe", "gui"]
+# Default to GUI
+CMD ["aloe", "gui"]

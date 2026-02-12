@@ -1,0 +1,21 @@
+[package]
+name = "aloe-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Enable std for tests and benchmarking
+std = ["nalgebra/std"]
+
+[dependencies]
+nalgebra.workspace = true
+libm.workspace = true
+zerocopy = { version = "0.8.39", features = ["derive"] }
+
+[dev-dependencies]
+aloe-core = { path = ".", features = ["std"] }

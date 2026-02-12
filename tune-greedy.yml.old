@@ -27,13 +27,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build project
-        run: cargo build --release -p aloe-cli
-      - name: Cache build artifacts
+        with:
+          workspaces: rust
+      - uses: astral-sh/setup-uv@v6
+      - name: Install project
+        run: uv sync && uv run maturin develop --release
+      - name: Cache installed env
         uses: actions/cache/save@v4
         with:
           path: |
-            target/release/aloe-cli
+            .venv
+            rust/target
           key: aloe-greedy-${{ github.sha }}
 
   # ── Greedy coordinate descent with parallel matrix ───────────────
@@ -84,18 +88,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: astral-sh/setup-uv@v6
       - name: Restore build cache
         uses: actions/cache/restore@v4
         with:
           path: |
-            target/release/aloe-cli
+            .venv
+            rust/target
           key: aloe-greedy-${{ github.sha }}
+      - name: Ensure project installed
+        run: uv sync && uv run maturin develop --release
 
       - name: Greedy tune (${{ matrix.rocket.name }}, noise=${{ matrix.noise_scale }}, seed=${{ matrix.seed }})
         run: |
           STEPS=${{ inputs.tune_steps || 450 }}
           STAGES="${{ inputs.tune_stages || 'pad burn coasting recovery' }}"
-          ./target/release/aloe-cli \
+          uv run aloe cli \
             ${{ matrix.rocket.args }} \
             --tune-sweep \
             --tune-mode greedy \

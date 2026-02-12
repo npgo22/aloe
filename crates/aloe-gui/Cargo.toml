@@ -1,0 +1,24 @@
+[package]
+name = "aloe-gui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nalgebra.workspace = true
+serde = { workspace = true, features = ["derive"] }
+aloe-core = { path = "../aloe-core" }
+aloe-sim = { path = "../aloe-sim" }
+
+# Server dependencies
+axum = "0.8"
+tokio = { workspace = true }
+tower-http = { version = "0.6", features = ["fs"] }
+tracing = { workspace = true }
+serde_json.workspace = true
+
+[lib]
+crate-type = ["rlib"]

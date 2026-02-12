@@ -1,0 +1,22 @@
+[package]
+name = "aloe-sim"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aloe-core.workspace = true
+nalgebra = { workspace = true, features = ["std"] }
+libm.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+serde = { workspace = true, optional = true }
+serde_json.workspace = true
+anyhow.workspace = true
+
+[features]
+default = ["serde"]
+serde = ["dep:serde", "aloe-core/std"]

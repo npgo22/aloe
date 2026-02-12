@@ -5,3 +5,4 @@ src/aloe/__pycache__
 **/*.so
 rust/target
 **/*output*
+target

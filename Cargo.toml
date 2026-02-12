@@ -1,0 +1,53 @@
+[workspace]
+members = [
+    "crates/aloe-core",
+    "crates/aloe-sim",
+    "crates/aloe-cli",
+    "crates/aloe-gui",
+    "crates/aloe",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Nolan <nolanp@example.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/nolanp/aloe"
+rust-version = "1.80"
+
+[workspace.dependencies]
+# Core dependencies (no_std compatible)
+nalgebra = { version = "0.34.1", default-features = false, features = ["libm"] }
+libm = "0.2.16"
+
+# Simulation dependencies
+rand = "0.10.0"
+rand_distr = "0.6.0"
+
+# CLI dependencies
+clap = { version = "4.5", features = ["derive", "env"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+
+# Logging and tracing
+tracing = "0.1"
+
+# Workspace members
+aloe-core = { path = "crates/aloe-core" }
+aloe-sim = { path = "crates/aloe-sim" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

@@ -12,9 +12,6 @@ permissions:
 jobs:
   fmt:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v4
 

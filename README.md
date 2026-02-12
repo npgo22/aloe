@@ -1,180 +1,140 @@
 # Aloe
 
-A flight simulator with "A 15-state Error-State Kalman Filter featuring stage-conditioned parameter adaptation via greedy coordinate descent, Mahalanobis-distance innovation gating for fault detection, ISA-76 Standard Atmosphere modeling for high-altitude barometric compensation, and robust multi-sensor fusion capable of operating in GPS-denied, IMU-degraded, or barometer-only configurations" complete with telemetry quantization. Python + Rust (via maturin/PyO3).
+A hobby-rocket flight simulator with sensor fusion (ES-EKF) and telemetry quantization. Fully implemented in Rust with a clean separation between `no_std` embedded code and standard library tools.
+
+## Architecture
+
+The project is organized as a Cargo workspace:
+
+### `crates/aloe-core` (no_std)
+
+Core estimation library for microcontroller deployment:
+- **ESKF**: Error-State Kalman Filter for state estimation
+- **Quantization**: Flight/recovery packet compression for telemetry
+- **State Machine**: Flight phase detection (pad, burn, coasting, recovery)
+- **LUT Data**: Atmosphere lookup tables
+
+### `crates/aloe-sim` (std)
+
+Simulation and modeling library:
+- **Simulation**: 3-DoF rocket flight physics
+- **Sensor Modeling**: Realistic sensor data generation with noise and latency
+- **Parameters**: Complete parameter specifications
+
+### `crates/aloe-cli`
+
+Command-line interface for batch simulations.
+
+### `crates/aloe`
+
+Main binary with `cli` and `gui` subcommands.
 
 ## Quick Start
 
-```sh
-uv sync
-uv run maturin develop --release
-uv run aloe gui          # web UI on :8080
-uv run aloe cli --help   # batch mode
+```bash
+# Build everything
+cargo build --release
+
+# Run tests
+cargo test --all
+
+# Run GUI
+cargo run -- gui
+
+# Check formatting and linting
+cargo fmt --all -- --check
+cargo clippy --all
 ```
 
-## CLI
+## GUI Usage
 
+```bash
+# Launch web GUI on default port 8080
+cargo run -- gui
+
+# Custom host/port
+cargo run -- gui --host 0.0.0.0 --port 3000
 ```
-uv run aloe cli [OPTIONS]
+
+The GUI provides an interactive interface for configuring rocket parameters, running simulations, and visualizing results with 3D trajectory plots and time-series data.
+
+```bash
+# Run with default parameters
+cargo run --release -- cli
+
+# Custom parameters
+cargo run --release -- cli \
+  --dry-mass 50.0 \
+  --propellant-mass 150.0 \
+  --thrust 15000.0 \
+  --burn-time 25.0
 ```
-
-### Modes
-
-| Flag | Description |
-|------|-------------|
-| `--single` | Single simulation run (default: parameter sweep) |
-| *(no flag)* | Full sweep across `--sweep-params` |
 
 ### Simulation Parameters
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--dry-mass` | 50 | Dry mass (kg) |
-| `--propellant-mass` | 150 | Propellant mass (kg) |
-| `--thrust` | 15000 | Thrust (N) |
-| `--burn-time` | 25 | Burn time (s) |
+| `--dry-mass` | 50.0 | Dry mass (kg) |
+| `--propellant-mass` | 150.0 | Propellant mass (kg) |
+| `--thrust` | 15000.0 | Thrust (N) |
+| `--burn-time` | 25.0 | Burn time (s) |
 | `--drag-coeff` | 0.40 | Drag coefficient |
 | `--ref-area` | 0.03 | Reference area (m²) |
-| `--gravity` | 9.81 | Gravitational acceleration (m/s²) |
-| `--wind-speed` | 3.0 | Crosswind X (m/s) |
-| `--wind-speed-z` | 0.0 | Crosswind Z (m/s) |
+| `--gravity` | 9.81 | Gravity (m/s²) |
+| `--wind-speed` | 3.0 | Wind X (m/s) |
+| `--wind-speed-z` | 0.0 | Wind Z (m/s) |
 | `--air-density` | 1.225 | Air density (kg/m³) |
-| `--launch-delay` | 0.0 | Pre-launch pad idle (s) |
-| `--spin-rate` | 0.0 | Roll rate (°/s) |
-| `--thrust-cant` | 0.0 | Thrust cant angle (°) |
+| `--launch-delay` | 1.0 | Launch delay (s) |
+| `--spin-rate` | 0.0 | Spin rate (°/s) |
+| `--thrust-cant` | 0.0 | Thrust cant (°) |
 
-### Sweep Control
+## Library Usage
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--sweep-params` | `dry_mass propellant_mass thrust burn_time` | Parameters to sweep |
-| `--sweep-steps` | 5 | Steps per parameter |
+```rust
+use aloe_sim::sim::{RocketParams, SimResult, simulate_6dof};
 
-### Sensors
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--no-sensors` | off | Skip sensor data generation |
-| `--seed` | 42 | RNG seed |
-| `--noise-scale` | 1.0 | Global noise multiplier |
-| `--disable-sensor` | *(none)* | Disable sensors: `bmi088_accel bmi088_gyro adxl375 ms5611 lis3mdl lc29h` |
-
-### Kalman Filter
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--no-filter` | off | Skip Kalman filter (runs by default) |
-| `--filter-report` | off | Generate XLSX error report |
-| `--mag-declination` | 0.0 | Magnetic declination (°) |
-| `--home-lat` | 35.0 | Home latitude (°) |
-| `--home-lon` | -106.0 | Home longitude (°) |
-| `--home-alt` | 1500.0 | Home altitude MSL (m) |
-
-#### Data Output Columns
-
-- **eskf**: Error-State Kalman Filter estimates (floating-point fusion of sensor data)
-- **quantized_flight**: Flight telemetry after quantization (simulates radio transmission limits)
-- **quant_roundtrip**: Quantization error (difference between original and quantize→dequantize roundtrip)
-- **quant_recovery**: Recovery phase quantized telemetry (parachute descent mode)
-
-### ESKF Tune-Sweep
-
-The `--tune-sweep` mode sweeps ESKF tuning parameters **per flight stage** to find
-optimal values. The four flight stages are:
-
-| Stage | Description |
-|-------|-------------|
-| `pad` | Stationary on the launch pad before ignition |
-| `burn` | Motor ignition through burnout (sustained upward acceleration) |
-| `coasting` | Post-burnout ascent, decelerating under gravity and drag |
-| `recovery` | Apogee reached, descending under drag / parachute |
-
-Two tuning strategies are available via `--tune-mode`:
-
-| Mode | Strategy | When to use |
-|------|----------|-------------|
-| `greedy` (default) | **Coordinate descent** — sweep the first param, lock the best value, then sweep the next param with the previous optimum locked in. Captures interactions between parameters. | Finding a combined optimum to use in production |
-| `oat` | **One-at-a-time** — each (param, stage) is swept independently while all others stay at defaults. Ignores interactions. | Helps determine which parameters matter most for each stage |
-
-```sh
-# Greedy coordinate descent (default, recommended)
-uv run aloe cli --tune-sweep
-
-# OAT sensitivity analysis
-uv run aloe cli --tune-sweep --tune-mode oat
-
-# Sweep specific params and/or stages
-uv run aloe cli --tune-sweep --tune-params r_baro r_gps_pos --tune-stages burn coasting
-
-# Fewer steps for a quick exploratory sweep
-uv run aloe cli --tune-sweep --tune-steps 5
+let params = RocketParams::default();
+let result: SimResult = simulate_6dof(&params);
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--tune-sweep` | off | Enable per-stage tuning sweep |
-| `--tune-mode` | `greedy` | Strategy: `greedy` (coordinate descent) or `oat` (sensitivity) |
-| `--tune-steps` | 15 | Log-spaced steps per parameter |
-| `--tune-params` | *(all 9)* | Subset of tuning params to sweep |
-| `--tune-stages` | *(all 4)* | Subset of flight stages to sweep |
+## Telemetry Packet Formats
 
-**Outputs:**
+### Flight Data (20 bytes)
+- Position N/E: 2× i16 (±32 km, 1 m resolution)
+- Altitude AGL: i32 (cm resolution)
+- Velocity N/E/D: 3× i16 (0.1 m/s resolution)
+- Roll/Pitch/Yaw: 3× u8 (0-255 → 0-360°)
+- Status: u8
 
-- `tune_sweep_summary.csv` — every evaluated (param, stage, value) with error metrics
-- `optimised_tuning.json` *(greedy mode only)* — the final optimised per-stage config,
-  ready to load or copy into your application
+### Recovery Data (14 bytes)
+- Latitude/Longitude: 2× i32 (degrees × 10^7)
+- Altitude MSL: i16 (meters)
+- Satellites/Fix info: u8
+- Battery voltage: u8 (0.1 V resolution)
 
-**Interpreting the results:**
+## Development
 
-| Metric | Meaning |
-|--------|---------|
-| `pos3d_rmse_m` | 3D position RMSE vs truth (primary objective) |
-| `vel3d_rmse_ms` | 3D velocity RMSE vs truth |
-| `pos3d_p95_m` | 95th-percentile position error |
-| `state_*_abserr_s` | Absolute error in detected flight state transition time |
+### Running Tests
 
-In **greedy mode**, the console shows `★` markers when a new best is found, and each
-dimension prints `→ locked param/stage = value (cumulative rmse = …)`. The final
-summary compares baseline (all defaults) vs optimised and prints the full per-stage
-config table. In **OAT mode**, you compare each parameter's sweep curve independently
-— look for the value that minimises `pos3d_rmse_m` in each (param, stage) cell.
-
-**GitHub Actions workflows:**
-
-- `.github/workflows/tune-sweep.yml` — OAT sensitivity (parallelised, one job per param)
-- `.github/workflows/tune-greedy.yml` — Greedy coordinate descent across multiple
-  rocket configurations (default, heavy/low-thrust, light/high-thrust, windy, etc.)
-
-
-### Output
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-o, --output-dir` | `output` | Output directory |
-| `-f, --format` | `parquet` | Output format: `parquet`, `csv`, `xlsx` |
-
-## Docker
-
-```sh
-docker pull ghcr.io/<owner>/aloe:main
-docker run -p 8080:8080 ghcr.io/<owner>/aloe:main
+```bash
+cargo test --all
+cargo test --doc
+cargo test --lib
 ```
 
-## LUT Regeneration
+### Code Quality
 
-```sh
-python3 gen_lut.py   # writes rust/src/lut_data.rs
+```bash
+# Format code
+cargo fmt --all
+
+# Run clippy
+cargo clippy --all -- -D warnings
+
+# Generate documentation
+cargo doc --all --no-deps
 ```
 
-## Wishlist
-* Harden the ESEKF to withstand sensor failures (currently completely falls apart if any of GPS, one of the two accelerometers, or the gyroscope fail)
-* Improve state detection
-* Research ways to hoist errors into adaptive kalman filter so that bad readings may be discarded
-* Make the simulated LIS3MDL reading useful by making it not a constant field with no attitude coupling.
-   - **Problem**: Current simulation is 3-DoF (translational only). The LIS3MDL magnetometer outputs constant values `[0.2, -0.4, 0.1]` gauss with no attitude coupling because the rocket's orientation is not tracked.
-   - **Solution**: Requires upgrading to full 6-DoF simulation with rotational dynamics (quaternion + angular velocity), aerodynamic moments, and proper body-frame sensor transformations.
-* Add emergency accelerometer fallback when attitude cannot be obtained
-* Use a LUT for the barometer to improve readings as the single-lapse-rate model is terrible past 11km
-* Add implementations for other sensor fusion algorithms
-* Add another state after apogee for secondary fire (i.e. Unscented KF, Invariant EKF, simple complementary filter + event logic, particle filter)
-* Make the state logic not suck
-* Make the UI usable
+## License
+
+MIT OR Apache-2.0

@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aloe Rocket Simulator</title>
+    <script src="https://cdn.plot.ly/plotly-3.3.1.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="bg-stone-100 h-screen overflow-hidden">
+    <nav class="bg-stone-950 text-slate-50 px-6 py-4 flex justify-between items-center">
+        <h1 class="text-2xl font-semibold">Aloe Rocket Simulator</h1>
+        <div x-show="isReconciling" x-cloak class="flex items-center gap-2 text-amber-400">
+            <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span class="text-sm font-medium">Updating...</span>
+        </div>
+    </nav>
+    
+    <div class="h-[calc(100vh-72px)] flex" x-data="simulator">
+        <!-- Configuration Column - Left (Fixed, no scroll) -->
+        <div class="w-[480px] flex-shrink-0 bg-stone-100 p-6 overflow-y-auto h-full">
+            <form id="sim-form" @submit.prevent class="space-y-6">
+                <!-- Run Button & Presets -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <div class="space-y-2">
+                        <p class="text-sm font-medium text-stone-600 mb-2">Quick Presets:</p>
+                        <div class="grid grid-cols-1 gap-2">
+                            <button type="button" onclick="applyPreset('30km')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
+                                30 km (rip)
+                            </button>
+                            <button type="button" onclick="applyPreset('12km')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
+                                12 km
+                            </button>
+                            <button type="button" onclick="applyPreset('high-drag')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
+                                High-drag test
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Rocket Configuration -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-stone-800 border-b border-stone-200 pb-2">Rocket Configuration</h2>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Dry Mass (kg)</label>
+                            <input type="number" name="dry_mass" value="20" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Propellant Mass (kg)</label>
+                            <input type="number" name="propellant_mass" value="10" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Thrust (N)</label>
+                            <input type="number" name="thrust" value="2000" step="100" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Burn Time (s)</label>
+                            <input type="number" name="burn_time" value="5" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Drag Coefficient</label>
+                            <input type="number" name="drag_coeff" value="0.5" step="0.01" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Reference Area (m²)</label>
+                            <input type="number" name="ref_area" value="0.0324" step="0.0001" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Launch Delay (s)</label>
+                            <input type="number" name="launch_delay" value="1" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Spin Rate (°/s)</label>
+                            <input type="number" name="spin_rate" value="0" step="10" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div class="col-span-2">
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Thrust Cant (°)</label>
+                            <input type="number" name="thrust_cant" value="0" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Environment Configuration -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-stone-800 border-b border-stone-200 pb-2">Environment</h2>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Gravity (m/s²)</label>
+                            <input type="number" name="gravity" value="9.81" step="0.01" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Wind North (m/s)</label>
+                            <input type="number" name="wind_north" value="5" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Wind East (m/s)</label>
+                            <input type="number" name="wind_east" value="0" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Crosswind (m/s)</label>
+                            <input type="number" name="crosswind" value="0" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                        <div class="col-span-2">
+                            <label class="block text-sm font-medium text-stone-700 mb-1">Air Density (kg/m³)</label>
+                            <input type="number" name="air_density" value="1.225" step="0.001" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Sensor Configuration -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-stone-800 border-b border-stone-200 pb-2">Sensors</h2>
+                    <div class="space-y-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-stone-700 mb-1">Noise Scale</label>
+                                <input type="number" name="noise_scale" value="1" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-stone-700 mb-1">RNG Seed</label>
+                                <input type="number" name="seed" value="42" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
+                            </div>
+                        </div>
+                        
+                        <div class="border-t border-stone-200 pt-4">
+                            <h3 class="text-sm font-semibold text-stone-700 mb-3">Enabled Sensors</h3>
+                            <div class="grid grid-cols-2 gap-2">
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" name="accel_enabled" value="true" checked class="rounded border-stone-300">
+                                    <span class="text-sm text-stone-700">Accelerometer</span>
+                                </label>
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" name="gyro_enabled" value="true" checked class="rounded border-stone-300">
+                                    <span class="text-sm text-stone-700">Gyroscope</span>
+                                </label>
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" name="mag_enabled" value="true" checked class="rounded border-stone-300">
+                                    <span class="text-sm text-stone-700">Magnetometer</span>
+                                </label>
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" name="baro_enabled" value="true" checked class="rounded border-stone-300">
+                                    <span class="text-sm text-stone-700">Barometer</span>
+                                </label>
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" name="gps_enabled" value="true" checked class="rounded border-stone-300">
+                                    <span class="text-sm text-stone-700">GPS</span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="border-t border-stone-200 pt-4">
+                            <h3 class="text-sm font-semibold text-stone-700 mb-3">Sample Rates (Hz)</h3>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="block text-xs text-stone-600 mb-1">Accel/Gyro</label>
+                                    <input type="number" name="accel_rate" value="1000" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-stone-600 mb-1">Magnetometer</label>
+                                    <input type="number" name="mag_rate" value="100" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-stone-600 mb-1">Barometer</label>
+                                    <input type="number" name="baro_rate" value="50" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-stone-600 mb-1">GPS</label>
+                                    <input type="number" name="gps_rate" value="10" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Filter Configuration -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 text-stone-800 border-b border-stone-200 pb-2">ESKF Filter Tuning</h2>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-stone-700 mb-2">Per-Stage Tuning Parameters</label>
+                            <div class="grid grid-cols-4 gap-2 text-xs font-medium text-stone-600 mb-2">
+                                <span>Parameter</span>
+                                <span>Pad</span>
+                                <span>Burn</span>
+                                <span>Coast</span>
+                            </div>
+                            <div class="space-y-2">
+                                <div class="grid grid-cols-4 gap-2 items-center">
+                                    <span class="text-sm text-stone-700">Accel Noise</span>
+                                    <input type="number" name="accel_noise_pad" value="0.2236" step="0.01" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                    <input type="number" name="accel_noise_burn" value="0.0243" step="0.01" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                    <input type="number" name="accel_noise_coast" value="0.01" step="0.01" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                                <div class="grid grid-cols-4 gap-2 items-center">
+                                    <span class="text-sm text-stone-700">Gyro Noise</span>
+                                    <input type="number" name="gyro_noise_pad" value="0.03728" step="0.001" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                    <input type="number" name="gyro_noise_burn" value="0.01389" step="0.001" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                    <input type="number" name="gyro_noise_coast" value="0.1" step="0.01" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                                <div class="grid grid-cols-4 gap-2 items-center">
+                                    <span class="text-sm text-stone-700">GPS Pos Noise</span>
+                                    <input type="number" name="gps_pos_pad" value="61.05" step="0.1" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                    <input type="number" name="gps_pos_burn" value="0.1" step="0.01" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                    <input type="number" name="gps_pos_coast" value="0.1" step="0.01" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                                <div class="grid grid-cols-4 gap-2 items-center">
+                                    <span class="text-sm text-stone-700">Baro Noise</span>
+                                    <input type="number" name="baro_noise_pad" value="0.1" step="0.1" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                    <input type="number" name="baro_noise_burn" value="2.236" step="0.1" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                    <input type="number" name="baro_noise_coast" value="50" step="1" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="border-t border-stone-200 pt-4">
+                            <h3 class="text-sm font-semibold text-stone-700 mb-2">Home Position</h3>
+                            <div class="grid grid-cols-3 gap-3">
+                                <div>
+                                    <label class="block text-xs text-stone-600 mb-1">Lat (°)</label>
+                                    <input type="number" name="home_lat" value="35.0" step="0.001" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-stone-600 mb-1">Lon (°)</label>
+                                    <input type="number" name="home_lon" value="-106.0" step="0.001" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-xs text-stone-600 mb-1">Alt (m)</label>
+                                    <input type="number" name="home_alt" value="1500" step="1" class="w-full px-2 py-1 border border-stone-300 rounded text-sm">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </div>
+        
+        <!-- Charts Column - Right (Scrollable) -->
+        <div class="flex-1 bg-stone-100 p-6 overflow-y-auto h-full">
+            <div class="space-y-6">
+                <!-- 3D Trajectory -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <div id="chart-trajectory" class="w-full h-[800px]"></div>
+                </div>
+                
+                <!-- 2D Charts Grid -->
+                <div class="grid grid-cols-2 gap-6">
+                    <div class="bg-white rounded-lg shadow-md p-4">
+                        <div id="chart-altitude" class="w-full h-[350px]"></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-4">
+                        <div id="chart-velocity" class="w-full h-[350px]"></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-4">
+                        <div id="chart-acceleration" class="w-full h-[350px]"></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-4">
+                        <div id="chart-force" class="w-full h-[350px]"></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-4">
+                        <div id="chart-mass" class="w-full h-[350px]"></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-4">
+                        <div id="chart-accel" class="w-full h-[350px]"></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-4">
+                        <div id="chart-gyro" class="w-full h-[350px]"></div>
+                    </div>
+                </div>
+                
+                <!-- Statistics Table -->
+                <div x-show="simulationData && simulationData.error_stats" x-cloak class="bg-white rounded-lg shadow-md p-6">
+                    <h3 class="text-lg font-semibold mb-4 text-stone-800 border-b border-stone-200 pb-2">Filter Error Statistics</h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs">
+                            <thead>
+                                <tr class="border-b border-stone-200 bg-stone-50">
+                                    <th class="py-2 px-1 text-stone-700 font-semibold whitespace-nowrap">Stage</th>
+                                    <th class="py-2 px-1 text-stone-700 font-semibold whitespace-nowrap">Quantity</th>
+                                    <th class="py-2 px-1 text-stone-700 font-semibold text-right whitespace-nowrap">Mean Error</th>
+                                    <th class="py-2 px-1 text-stone-700 font-semibold text-right whitespace-nowrap">Std Error</th>
+                                    <th class="py-2 px-1 text-stone-700 font-semibold text-right whitespace-nowrap">Mean Abs</th>
+                                    <th class="py-2 px-1 text-stone-700 font-semibold text-right whitespace-nowrap">RMSE</th>
+                                    <th class="py-2 px-1 text-stone-700 font-semibold text-right whitespace-nowrap">P95 Abs</th>
+                                    <th class="py-2 px-1 text-stone-700 font-semibold text-right whitespace-nowrap">N</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- ESKF Stats -->
+                                <template x-for="row in [
+                                    { stage: 'eskf', qty: 'pos_n (m)', mean: 'pos_n_mean', std: 'pos_n_std', mae: 'pos_n_mae', rmse: 'pos_n_rmse', p95: 'pos_n_p95', n: 'n' },
+                                    { stage: 'eskf', qty: 'pos_e (m)', mean: 'pos_e_mean', std: 'pos_e_std', mae: 'pos_e_mae', rmse: 'pos_e_rmse', p95: 'pos_e_p95', n: 'n' },
+                                    { stage: 'eskf', qty: 'pos_d (m)', mean: 'pos_d_mean', std: 'pos_d_std', mae: 'pos_d_mae', rmse: 'pos_d_rmse', p95: 'pos_d_p95', n: 'n' },
+                                    { stage: 'eskf', qty: 'vel_n (m/s)', mean: 'vel_n_mean', std: 'vel_n_std', mae: 'vel_n_mae', rmse: 'vel_n_rmse', p95: 'vel_n_p95', n: 'n' },
+                                    { stage: 'eskf', qty: 'vel_e (m/s)', mean: 'vel_e_mean', std: 'vel_e_std', mae: 'vel_e_mae', rmse: 'vel_e_rmse', p95: 'vel_e_p95', n: 'n' },
+                                    { stage: 'eskf', qty: 'vel_d (m/s)', mean: 'vel_d_mean', std: 'vel_d_std', mae: 'vel_d_mae', rmse: 'vel_d_rmse', p95: 'vel_d_p95', n: 'n' },
+                                    { stage: 'eskf', qty: 'pos_3d (m)', mean: 'pos_3d_mean', std: 'pos_3d_std', mae: 'pos_3d_mae', rmse: 'pos_3d_rmse', p95: 'pos_3d_p95', n: 'n', bold: true }
+                                ]" :key="row.qty">
+                                    <tr class="border-b border-stone-100" :class="row.bold ? 'bg-stone-50 font-semibold' : ''">
+                                        <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
+                                        <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.eskf?.[row.mean])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.eskf?.[row.std])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.eskf?.[row.mae])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.eskf?.[row.rmse])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.eskf?.[row.p95])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatInt(simulationData?.error_stats?.eskf?.[row.n])"></td>
+                                    </tr>
+                                </template>
+                                
+                                <!-- Quantized Flight Stats -->
+                                <template x-for="row in [
+                                    { stage: 'qf', qty: 'pos_n (m)', mean: 'pos_n_mean', std: 'pos_n_std', mae: 'pos_n_mae', rmse: 'pos_n_rmse', p95: 'pos_n_p95', n: 'n' },
+                                    { stage: 'qf', qty: 'pos_e (m)', mean: 'pos_e_mean', std: 'pos_e_std', mae: 'pos_e_mae', rmse: 'pos_e_rmse', p95: 'pos_e_p95', n: 'n' },
+                                    { stage: 'qf', qty: 'alt_agl (m)', mean: 'alt_mean', std: 'alt_std', mae: 'alt_mae', rmse: 'alt_rmse', p95: 'alt_p95', n: 'n' },
+                                    { stage: 'qf', qty: 'vel_n (m/s)', mean: 'vel_n_mean', std: 'vel_n_std', mae: 'vel_n_mae', rmse: 'vel_n_rmse', p95: 'vel_n_p95', n: 'n' },
+                                    { stage: 'qf', qty: 'vel_e (m/s)', mean: 'vel_e_mean', std: 'vel_e_std', mae: 'vel_e_mae', rmse: 'vel_e_rmse', p95: 'vel_e_p95', n: 'n' },
+                                    { stage: 'qf', qty: 'vel_d (m/s)', mean: 'vel_d_mean', std: 'vel_d_std', mae: 'vel_d_mae', rmse: 'vel_d_rmse', p95: 'vel_d_p95', n: 'n' },
+                                    { stage: 'qf', qty: 'pos_3d (m)', mean: 'pos_3d_mean', std: 'pos_3d_std', mae: 'pos_3d_mae', rmse: 'pos_3d_rmse', p95: 'pos_3d_p95', n: 'n', bold: true }
+                                ]" :key="row.qty">
+                                    <tr class="border-b border-stone-100" :class="row.bold ? 'bg-stone-50 font-semibold' : ''">
+                                        <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
+                                        <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quantized_flight?.[row.mean])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quantized_flight?.[row.std])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quantized_flight?.[row.mae])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quantized_flight?.[row.rmse])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quantized_flight?.[row.p95])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatInt(simulationData?.error_stats?.quantized_flight?.[row.n])"></td>
+                                    </tr>
+                                </template>
+                                
+                                <!-- Quant Roundtrip Stats -->
+                                <template x-for="row in [
+                                    { stage: 'qr', qty: 'pos_n (m)', mean: 'pos_n_mean', std: 'pos_n_std', mae: 'pos_n_mae', rmse: 'pos_n_rmse', p95: 'pos_n_p95', n: 'n' },
+                                    { stage: 'qr', qty: 'pos_e (m)', mean: 'pos_e_mean', std: 'pos_e_std', mae: 'pos_e_mae', rmse: 'pos_e_rmse', p95: 'pos_e_p95', n: 'n' },
+                                    { stage: 'qr', qty: 'alt_agl (m)', mean: 'alt_mean', std: 'alt_std', mae: 'alt_mae', rmse: 'alt_rmse', p95: 'alt_p95', n: 'n' },
+                                    { stage: 'qr', qty: 'vel_n (m/s)', mean: 'vel_n_mean', std: 'vel_n_std', mae: 'vel_n_mae', rmse: 'vel_n_rmse', p95: 'vel_n_p95', n: 'n' },
+                                    { stage: 'qr', qty: 'vel_e (m/s)', mean: 'vel_e_mean', std: 'vel_e_std', mae: 'vel_e_mae', rmse: 'vel_e_rmse', p95: 'vel_e_p95', n: 'n' },
+                                    { stage: 'qr', qty: 'vel_d (m/s)', mean: 'vel_d_mean', std: 'vel_d_std', mae: 'vel_d_mae', rmse: 'vel_d_rmse', p95: 'vel_d_p95', n: 'n' }
+                                ]" :key="row.qty">
+                                    <tr class="border-b border-stone-100">
+                                        <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
+                                        <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.mean])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.std])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.mae])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.rmse])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.p95])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatInt(simulationData?.error_stats?.quant_roundtrip?.[row.n])"></td>
+                                    </tr>
+                                </template>
+                                
+                                <!-- Quant Recovery Stats -->
+                                <template x-for="row in [
+                                    { stage: 'qrec', qty: 'lat (deg)', mean: 'lat_mean', std: 'lat_std', mae: 'lat_mae', rmse: 'lat_rmse', p95: 'lat_p95', n: 'n' },
+                                    { stage: 'qrec', qty: 'lon (deg)', mean: 'lon_mean', std: 'lon_std', mae: 'lon_mae', rmse: 'lon_rmse', p95: 'lon_p95', n: 'n' },
+                                    { stage: 'qrec', qty: 'alt_msl (m)', mean: 'alt_mean', std: 'alt_std', mae: 'alt_mae', rmse: 'alt_rmse', p95: 'alt_p95', n: 'n' },
+                                    { stage: 'qrec', qty: 'horiz_pos (m)', mean: 'horiz_mean', std: 'horiz_std', mae: 'horiz_mae', rmse: 'horiz_rmse', p95: 'horiz_p95', n: 'n' }
+                                ]" :key="row.qty">
+                                    <tr class="border-b border-stone-100">
+                                        <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
+                                        <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_recovery?.[row.mean])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_recovery?.[row.std])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_recovery?.[row.mae])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_recovery?.[row.rmse])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_recovery?.[row.p95])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatInt(simulationData?.error_stats?.quant_recovery?.[row.n])"></td>
+                                    </tr>
+                                </template>
+                                
+                                <!-- State Detection Stats -->
+                                <template x-for="row in [
+                                    { stage: 'sd', qty: 'burn_time_err (s)', mean: 'burn_mean', std: 'burn_std', mae: 'burn_mae', rmse: 'burn_rmse', p95: 'burn_p95', n: 'n' },
+                                    { stage: 'sd', qty: 'coast_time_err (s)', mean: 'coast_mean', std: 'coast_std', mae: 'coast_mae', rmse: 'coast_rmse', p95: 'coast_p95', n: 'n' },
+                                    { stage: 'sd', qty: 'rec_time_err (s)', mean: 'rec_mean', std: 'rec_std', mae: 'rec_mae', rmse: 'rec_rmse', p95: 'rec_p95', n: 'n' }
+                                ]" :key="row.qty">
+                                    <tr class="border-b border-stone-100">
+                                        <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
+                                        <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.state_detection?.[row.mean])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.state_detection?.[row.std])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.state_detection?.[row.mae])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.state_detection?.[row.rmse])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.state_detection?.[row.p95])"></td>
+                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatInt(simulationData?.error_stats?.state_detection?.[row.n])"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/js/app.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .overflow-y-auto::-webkit-scrollbar {
+            width: 8px;
+        }
+        .overflow-y-auto::-webkit-scrollbar-track {
+            background: #e7e5e4;
+        }
+        .overflow-y-auto::-webkit-scrollbar-thumb {
+            background: #a8a29e;
+            border-radius: 4px;
+        }
+        .overflow-y-auto::-webkit-scrollbar-thumb:hover {
+            background: #78716c;
+        }
+    </style>
+</body>
+</html>
