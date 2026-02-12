@@ -129,31 +129,35 @@
                             </div>
                         </div>
                         
-                        <div class="border-t border-stone-200 pt-4">
-                            <h3 class="text-sm font-semibold text-stone-700 mb-3">Enabled Sensors</h3>
-                            <div class="grid grid-cols-2 gap-2">
-                                <label class="flex items-center space-x-2">
-                                    <input type="checkbox" name="accel_enabled" value="true" checked class="rounded border-stone-300">
-                                    <span class="text-sm text-stone-700">Accelerometer</span>
-                                </label>
-                                <label class="flex items-center space-x-2">
-                                    <input type="checkbox" name="gyro_enabled" value="true" checked class="rounded border-stone-300">
-                                    <span class="text-sm text-stone-700">Gyroscope</span>
-                                </label>
-                                <label class="flex items-center space-x-2">
-                                    <input type="checkbox" name="mag_enabled" value="true" checked class="rounded border-stone-300">
-                                    <span class="text-sm text-stone-700">Magnetometer</span>
-                                </label>
-                                <label class="flex items-center space-x-2">
-                                    <input type="checkbox" name="baro_enabled" value="true" checked class="rounded border-stone-300">
-                                    <span class="text-sm text-stone-700">Barometer</span>
-                                </label>
-                                <label class="flex items-center space-x-2">
-                                    <input type="checkbox" name="gps_enabled" value="true" checked class="rounded border-stone-300">
-                                    <span class="text-sm text-stone-700">GPS</span>
-                                </label>
-                            </div>
-                        </div>
+                         <div class="border-t border-stone-200 pt-4">
+                             <h3 class="text-sm font-semibold text-stone-700 mb-3">Enabled Sensors</h3>
+                             <div class="grid grid-cols-2 gap-2">
+                                 <label class="flex items-center space-x-2">
+                                     <input type="checkbox" name="bmi088_accel_enabled" value="true" checked class="rounded border-stone-300">
+                                     <span class="text-sm text-stone-700">BMI088 Accelerometer</span>
+                                 </label>
+                                 <label class="flex items-center space-x-2">
+                                     <input type="checkbox" name="bmi088_gyro_enabled" value="true" checked class="rounded border-stone-300">
+                                     <span class="text-sm text-stone-700">BMI088 Gyroscope</span>
+                                 </label>
+                                 <label class="flex items-center space-x-2">
+                                     <input type="checkbox" name="adxl375_enabled" value="true" checked class="rounded border-stone-300">
+                                     <span class="text-sm text-stone-700">ADXL375 Accelerometer</span>
+                                 </label>
+                                 <label class="flex items-center space-x-2">
+                                     <input type="checkbox" name="lis3mdl_enabled" value="true" checked class="rounded border-stone-300">
+                                     <span class="text-sm text-stone-700">LIS3MDL Magnetometer</span>
+                                 </label>
+                                 <label class="flex items-center space-x-2">
+                                     <input type="checkbox" name="ms5611_enabled" value="true" checked class="rounded border-stone-300">
+                                     <span class="text-sm text-stone-700">MS5611 Barometer</span>
+                                 </label>
+                                 <label class="flex items-center space-x-2">
+                                     <input type="checkbox" name="gps_enabled" value="true" checked class="rounded border-stone-300">
+                                     <span class="text-sm text-stone-700">LC-29H GPS</span>
+                                 </label>
+                             </div>
+                         </div>
                         
                          <div class="border-t border-stone-200 pt-4">
                              <h3 class="text-sm font-semibold text-stone-700 mb-3">Sample Rates (Hz)</h3>
@@ -282,8 +286,8 @@
                     </div>
                 </div>
                 
-                <!-- Statistics Table -->
-                <div x-show="simulationData && simulationData.error_stats" x-cloak class="bg-white rounded-lg shadow-md p-6">
+                 <!-- Statistics Table -->
+                 <div x-if="simulationData && simulationData.error_stats" x-cloak class="bg-white rounded-lg shadow-md p-6">
                     <h3 class="text-lg font-semibold mb-4 text-stone-800 border-b border-stone-200 pb-2">Filter Error Statistics</h3>
                     <div class="overflow-x-auto">
                         <table class="w-full text-left text-xs">
@@ -313,12 +317,12 @@
                                     <tr class="border-b border-stone-100" :class="row.bold ? 'bg-stone-50 font-semibold' : ''">
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.eskf?.[row.mean])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.eskf?.[row.std])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.eskf?.[row.mae])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.eskf?.[row.rmse])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.eskf?.[row.p95])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatInt(simulationData?.error_stats?.eskf?.[row.n])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.eskf?.[row.mean])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.eskf?.[row.std])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.eskf?.[row.mae])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.eskf?.[row.rmse])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.eskf?.[row.p95])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatInt(simulationData?.error_stats?.eskf?.[row.n])"></td>
                                     </tr>
                                 </template>
                                 
@@ -335,12 +339,12 @@
                                     <tr class="border-b border-stone-100" :class="row.bold ? 'bg-stone-50 font-semibold' : ''">
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quantized_flight?.[row.mean])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quantized_flight?.[row.std])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quantized_flight?.[row.mae])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quantized_flight?.[row.rmse])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quantized_flight?.[row.p95])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatInt(simulationData?.error_stats?.quantized_flight?.[row.n])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quantized_flight?.[row.mean])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quantized_flight?.[row.std])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quantized_flight?.[row.mae])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quantized_flight?.[row.rmse])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quantized_flight?.[row.p95])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatInt(simulationData?.error_stats?.quantized_flight?.[row.n])"></td>
                                     </tr>
                                 </template>
                                 
@@ -356,12 +360,12 @@
                                     <tr class="border-b border-stone-100">
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.mean])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.std])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.mae])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.rmse])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.p95])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatInt(simulationData?.error_stats?.quant_roundtrip?.[row.n])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.mean])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.std])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.mae])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.rmse])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.p95])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatInt(simulationData?.error_stats?.quant_roundtrip?.[row.n])"></td>
                                     </tr>
                                 </template>
                                 
@@ -375,12 +379,12 @@
                                     <tr class="border-b border-stone-100">
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_recovery?.[row.mean])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_recovery?.[row.std])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_recovery?.[row.mae])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_recovery?.[row.rmse])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.quant_recovery?.[row.p95])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatInt(simulationData?.error_stats?.quant_recovery?.[row.n])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_recovery?.[row.mean])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_recovery?.[row.std])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_recovery?.[row.mae])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_recovery?.[row.rmse])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_recovery?.[row.p95])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatInt(simulationData?.error_stats?.quant_recovery?.[row.n])"></td>
                                     </tr>
                                 </template>
                                 
@@ -393,12 +397,12 @@
                                     <tr class="border-b border-stone-100">
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.state_detection?.[row.mean])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.state_detection?.[row.std])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.state_detection?.[row.mae])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.state_detection?.[row.rmse])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatStat(simulationData?.error_stats?.state_detection?.[row.p95])"></td>
-                                        <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="formatInt(simulationData?.error_stats?.state_detection?.[row.n])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.state_detection?.[row.mean])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.state_detection?.[row.std])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.state_detection?.[row.mae])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.state_detection?.[row.rmse])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.state_detection?.[row.p95])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatInt(simulationData?.error_stats?.state_detection?.[row.n])"></td>
                                     </tr>
                                 </template>
                             </tbody>

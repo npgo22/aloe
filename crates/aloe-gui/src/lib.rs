@@ -49,10 +49,11 @@ struct SimConfig {
     noise_scale: f64,
     seed: u64,
     no_sensors: bool,
-    accel_enabled: bool,
-    gyro_enabled: bool,
-    mag_enabled: bool,
-    baro_enabled: bool,
+    bmi088_accel_enabled: bool,
+    bmi088_gyro_enabled: bool,
+    adxl375_enabled: bool,
+    lis3mdl_enabled: bool,
+    ms5611_enabled: bool,
     gps_enabled: bool,
 }
 
@@ -75,10 +76,11 @@ impl Default for SimConfig {
             noise_scale: 1.0,
             seed: 42,
             no_sensors: false,
-            accel_enabled: true,
-            gyro_enabled: true,
-            mag_enabled: true,
-            baro_enabled: true,
+            bmi088_accel_enabled: true,
+            bmi088_gyro_enabled: true,
+            adxl375_enabled: true,
+            lis3mdl_enabled: true,
+            ms5611_enabled: true,
             gps_enabled: true,
         }
     }
@@ -116,10 +118,11 @@ fn parse_config(params: &HashMap<String, String>) -> SimConfig {
     }
     
     parse_param!(no_sensors, "no_sensors", bool);
-    parse_param!(accel_enabled, "accel_enabled", bool);
-    parse_param!(gyro_enabled, "gyro_enabled", bool);
-    parse_param!(mag_enabled, "mag_enabled", bool);
-    parse_param!(baro_enabled, "baro_enabled", bool);
+    parse_param!(bmi088_accel_enabled, "bmi088_accel_enabled", bool);
+    parse_param!(bmi088_gyro_enabled, "bmi088_gyro_enabled", bool);
+    parse_param!(adxl375_enabled, "adxl375_enabled", bool);
+    parse_param!(lis3mdl_enabled, "lis3mdl_enabled", bool);
+    parse_param!(ms5611_enabled, "ms5611_enabled", bool);
     parse_param!(gps_enabled, "gps_enabled", bool);
     
     config
@@ -375,10 +378,10 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             accel_bias: Vector3::zeros(),
             gyro_bias: Vector3::zeros(),
             seed: config.seed,
-            accel_enabled: config.accel_enabled,
-            gyro_enabled: config.gyro_enabled,
-            mag_enabled: config.mag_enabled,
-            baro_enabled: config.baro_enabled,
+            accel_enabled: config.bmi088_accel_enabled || config.adxl375_enabled,
+            gyro_enabled: config.bmi088_gyro_enabled,
+            mag_enabled: config.lis3mdl_enabled,
+            baro_enabled: config.ms5611_enabled,
             gps_enabled: config.gps_enabled,
         };
         let sensor_data_sim = generate_sensor_data(&sim_result, &sensor_config);

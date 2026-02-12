@@ -1,6 +1,6 @@
 document.addEventListener('alpine:init', () => {
     Alpine.data('simulator', () => ({
-        simulationData: null,
+        simulationData: {},
         isReconciling: false,
         formatStat(val) {
             if (val === undefined || val === null) return '-';
@@ -59,6 +59,7 @@ document.addEventListener('alpine:init', () => {
                 });
             } catch (error) {
                 console.error('Simulation error:', error);
+                this.simulationData = {};
                 this.isReconciling = false;
             }
         },
@@ -325,7 +326,7 @@ document.addEventListener('alpine:init', () => {
             
             const layout = {
                 title: {
-                    text: 'BMI088 Accelerometer',
+                    text: 'Accelerometer',
                     font: { size: 14, color: '#1c1917' }
                 },
                 xaxis: { 
@@ -357,7 +358,7 @@ document.addEventListener('alpine:init', () => {
             
             const layout = {
                 title: {
-                    text: 'BMI088 Gyroscope',
+                    text: 'Gyroscope',
                     font: { size: 14, color: '#1c1917' }
                 },
                 xaxis: { 
