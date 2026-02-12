@@ -14,7 +14,7 @@ on:
       tune_stages:
         description: "Stages to sweep (space-separated, default: all)"
         type: string
-        default: "'pad burn coasting recovery'"
+        default: pad burn coasting recovery
 
 permissions:
   contents: read

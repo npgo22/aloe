@@ -6,7 +6,8 @@
     <title>Aloe Rocket Simulator</title>
     <script src="https://cdn.plot.ly/plotly-3.3.1.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
@@ -360,12 +361,12 @@
                                     <tr class="border-b border-stone-100">
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.mean])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.std])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.mae])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.rmse])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_roundtrip?.[row.p95])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatInt(simulationData?.error_stats?.quant_roundtrip?.[row.n])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quant_roundtrip[row.mean]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quant_roundtrip[row.std]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quant_roundtrip[row.mae]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quant_roundtrip[row.rmse]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quant_roundtrip[row.p95]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatInt(simulationData.error_stats.quant_roundtrip[row.n]) : '-'"></td>
                                     </tr>
                                 </template>
                                 
@@ -379,12 +380,12 @@
                                     <tr class="border-b border-stone-100">
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_recovery?.[row.mean])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_recovery?.[row.std])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_recovery?.[row.mae])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_recovery?.[row.rmse])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quant_recovery?.[row.p95])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatInt(simulationData?.error_stats?.quant_recovery?.[row.n])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quant_recovery[row.mean]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quant_recovery[row.std]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quant_recovery[row.mae]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quant_recovery[row.rmse]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quant_recovery[row.p95]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatInt(simulationData.error_stats.quant_recovery[row.n]) : '-'"></td>
                                     </tr>
                                 </template>
                                 
@@ -397,12 +398,12 @@
                                     <tr class="border-b border-stone-100">
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.state_detection?.[row.mean])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.state_detection?.[row.std])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.state_detection?.[row.mae])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.state_detection?.[row.rmse])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.state_detection?.[row.p95])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatInt(simulationData?.error_stats?.state_detection?.[row.n])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.state_detection[row.mean]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.state_detection[row.std]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.state_detection[row.mae]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.state_detection[row.rmse]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.state_detection[row.p95]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatInt(simulationData.error_stats.state_detection[row.n]) : '-'"></td>
                                     </tr>
                                 </template>
                             </tbody>
