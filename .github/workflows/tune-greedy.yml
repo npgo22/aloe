@@ -93,7 +93,7 @@ jobs:
 
       - name: Greedy tune (${{ matrix.rocket.name }}, noise=${{ matrix.noise_scale }}, seed=${{ matrix.seed }})
         run: |
-          STEPS=${{ inputs.tune_steps || 100 }}
+          STEPS=${{ inputs.tune_steps || 500 }}
           STAGES="${{ inputs.tune_stages || 'pad burn coasting recovery' }}"
           ./target/release/aloe-cli \
             ${{ matrix.rocket.args }} \
