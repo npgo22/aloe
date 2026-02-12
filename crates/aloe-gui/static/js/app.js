@@ -1,16 +1,30 @@
+// Global functions for Alpine expressions (defined first for availability)
+window.formatStat = function(val) {
+    if (val === undefined || val === null) return '-';
+    if (Math.abs(val) < 0.001) return val.toExponential(3);
+    return val.toFixed(4);
+};
+
+window.formatInt = function(val) {
+    if (val === undefined || val === null) return '-';
+    return Math.round(val).toString();
+};
+
 document.addEventListener('alpine:init', () => {
     Alpine.data('simulator', () => ({
-        simulationData: {},
+        simulationData: {
+            error_stats: {
+                // Initialize with default values to prevent undefined errors
+                pos_n_min: 0, pos_n_max: 0, pos_n_mean: 0, pos_n_std: 0, pos_n_rmse: 0,
+                pos_e_min: 0, pos_e_max: 0, pos_e_mean: 0, pos_e_std: 0, pos_e_rmse: 0,
+                pos_d_min: 0, pos_d_max: 0, pos_d_mean: 0, pos_d_std: 0, pos_d_rmse: 0,
+                vel_n_min: 0, vel_n_max: 0, vel_n_mean: 0, vel_n_std: 0, vel_n_rmse: 0,
+                vel_e_min: 0, vel_e_max: 0, vel_e_mean: 0, vel_e_std: 0, vel_e_rmse: 0,
+                vel_d_min: 0, vel_d_max: 0, vel_d_mean: 0, vel_d_std: 0, vel_d_rmse: 0,
+                pos_3d_min: 0, pos_3d_max: 0, pos_3d_mean: 0, pos_3d_std: 0, pos_3d_rmse: 0
+            }
+        },
         isReconciling: false,
-        formatStat(val) {
-            if (val === undefined || val === null) return '-';
-            if (Math.abs(val) < 0.001) return val.toExponential(3);
-            return val.toFixed(4);
-        },
-        formatInt(val) {
-            if (val === undefined || val === null) return '-';
-            return Math.round(val).toString();
-        },
         init() {
             // Auto-run on init
             this.runSim();
@@ -52,14 +66,32 @@ document.addEventListener('alpine:init', () => {
             
             try {
                 const response = await fetch('/api/simulate?' + params);
+
+                // HTTP-level errors
+                if (!response.ok) {
+                    console.error('Server returned', response.status);
+                    this.simulationData = { error_message: `HTTP ${response.status}` };
+                    this.isReconciling = false;
+                    return;
+                }
+
                 this.simulationData = await response.json();
+
+                // Backend returned a structured failure
+                if (this.simulationData && this.simulationData.success === false) {
+                    console.error('Simulation failed:', this.simulationData.error_message || 'unknown');
+                    // show error in console and stop; UI can read simulationData.error_message
+                    this.isReconciling = false;
+                    return;
+                }
+
                 this.$nextTick(() => {
                     this.renderAllCharts();
                     this.isReconciling = false;
                 });
             } catch (error) {
                 console.error('Simulation error:', error);
-                this.simulationData = {};
+                this.simulationData = { error_message: String(error) };
                 this.isReconciling = false;
             }
         },
@@ -460,15 +492,3 @@ function applyPreset(presetName) {
 }
 
 window.applyPreset = applyPreset;
-
-// Global functions for Alpine expressions
-window.formatStat = function(val) {
-    if (val === undefined || val === null) return '-';
-    if (Math.abs(val) < 0.001) return val.toExponential(3);
-    return val.toFixed(4);
-};
-
-window.formatInt = function(val) {
-    if (val === undefined || val === null) return '-';
-    return Math.round(val).toString();
-};
