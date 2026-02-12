@@ -317,12 +317,12 @@
                                     <tr class="border-b border-stone-100" :class="row.bold ? 'bg-stone-50 font-semibold' : ''">
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.eskf?.[row.mean])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.eskf?.[row.std])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.eskf?.[row.mae])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.eskf?.[row.rmse])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.eskf?.[row.p95])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatInt(simulationData?.error_stats?.eskf?.[row.n])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.eskf[row.mean]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.eskf[row.std]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.eskf[row.mae]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.eskf[row.rmse]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.eskf[row.p95]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatInt(simulationData.error_stats.eskf[row.n]) : '-'"></td>
                                     </tr>
                                 </template>
                                 
@@ -339,12 +339,12 @@
                                     <tr class="border-b border-stone-100" :class="row.bold ? 'bg-stone-50 font-semibold' : ''">
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                         <td class="py-1 px-1 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quantized_flight?.[row.mean])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quantized_flight?.[row.std])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quantized_flight?.[row.mae])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quantized_flight?.[row.rmse])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatStat(simulationData?.error_stats?.quantized_flight?.[row.p95])"></td>
-                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="this.formatInt(simulationData?.error_stats?.quantized_flight?.[row.n])"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quantized_flight[row.mean]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quantized_flight[row.std]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quantized_flight[row.mae]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quantized_flight[row.rmse]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.quantized_flight[row.p95]) : '-'"></td>
+                                         <td class="py-1 px-1 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatInt(simulationData.error_stats.quantized_flight[row.n]) : '-'"></td>
                                     </tr>
                                 </template>
                                 

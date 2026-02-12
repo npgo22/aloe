@@ -73,7 +73,7 @@ jobs:
             --tune-mode oat \
             --tune-steps "$STEPS" \
             --tune-params ${{ matrix.param }} \
-            --tune-stages $STAGES \
+            --tune-stages "$STAGES" \
             -o /tmp/aloe-tune-${{ matrix.param }}
 
       - name: Verify outputs

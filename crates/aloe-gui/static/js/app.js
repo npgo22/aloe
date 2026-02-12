@@ -460,3 +460,15 @@ function applyPreset(presetName) {
 }
 
 window.applyPreset = applyPreset;
+
+// Global functions for Alpine expressions
+window.formatStat = function(val) {
+    if (val === undefined || val === null) return '-';
+    if (Math.abs(val) < 0.001) return val.toExponential(3);
+    return val.toFixed(4);
+};
+
+window.formatInt = function(val) {
+    if (val === undefined || val === null) return '-';
+    return Math.round(val).toString();
+};

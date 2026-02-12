@@ -100,7 +100,7 @@ jobs:
             --tune-sweep \
             --tune-mode greedy \
             --tune-steps "$STEPS" \
-            --tune-stages $STAGES \
+            --tune-stages "$STAGES" \
             --sensor-failure-test \
             --tune-noise-scales ${{ matrix.noise_scale }} \
             --tune-seeds ${{ matrix.seed }} \
