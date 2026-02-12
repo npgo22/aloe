@@ -16,6 +16,13 @@ pub struct SensorConfig {
     pub gyro_bias: Vector3<f64>,
 
     pub seed: u64,
+
+    // Enable flags
+    pub accel_enabled: bool,
+    pub gyro_enabled: bool,
+    pub mag_enabled: bool,
+    pub baro_enabled: bool,
+    pub gps_enabled: bool,
 }
 
 impl Default for SensorConfig {
@@ -31,6 +38,11 @@ impl Default for SensorConfig {
             accel_bias: Vector3::zeros(),
             gyro_bias: Vector3::zeros(),
             seed: 42,
+            accel_enabled: true,
+            gyro_enabled: true,
+            mag_enabled: true,
+            baro_enabled: true,
+            gps_enabled: true,
         }
     }
 }
@@ -73,58 +85,63 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
 
     for i in 0..n {
         // 1. IMU (Accelerometer)
-        // Sim calculates "Proper Acceleration" (Force/Mass).
-        // Gravity is ALREADY excluded from this by physics definition.
-        // However, stationary on pad, Sim accel = (Thrust+Support)/m = 0/m = 0?
-        // Wait. In the Sim:
-        //   On Pad: Force = Thrust + Support + Gravity = 0.
-        //   Sim Accel = 0.
-        //   Proper Accel = (Thrust + Support) / m = -Gravity.
-        //   So stationary accelerometer reads 1g UP.
-        // We need to verify if `sim.accel_body` captures the support force.
-        // The previous sim code logic handled "On Rod" by zeroing lateral, but didn't explicitly add support force.
-        // FIX: The sim needs to output proper acceleration correctly.
-        // If Sim says kinematic accel is 0 (stationary), proper accel is -g rotated to body.
+        if cfg.accel_enabled {
+            let proper_accel_true = sim.accel_body[i];
 
-        let proper_accel_true = sim.accel_body[i];
-
-        let ax = proper_accel_true.x + cfg.accel_bias.x + d_accel.sample(&mut rng);
-        let ay = proper_accel_true.y + cfg.accel_bias.y + d_accel.sample(&mut rng);
-        let az = proper_accel_true.z + cfg.accel_bias.z + d_accel.sample(&mut rng);
-        data.accel_meas.push(Vector3::new(ax, ay, az));
+            let ax = proper_accel_true.x + cfg.accel_bias.x + d_accel.sample(&mut rng);
+            let ay = proper_accel_true.y + cfg.accel_bias.y + d_accel.sample(&mut rng);
+            let az = proper_accel_true.z + cfg.accel_bias.z + d_accel.sample(&mut rng);
+            data.accel_meas.push(Vector3::new(ax, ay, az));
+        } else {
+            data.accel_meas.push(Vector3::zeros());
+        }
 
         // 2. Gyroscope
-        let gx = sim.ang_vel[i].x + cfg.gyro_bias.x + d_gyro.sample(&mut rng);
-        let gy = sim.ang_vel[i].y + cfg.gyro_bias.y + d_gyro.sample(&mut rng);
-        let gz = sim.ang_vel[i].z + cfg.gyro_bias.z + d_gyro.sample(&mut rng);
-        data.gyro_meas.push(Vector3::new(gx, gy, gz));
+        if cfg.gyro_enabled {
+            let gx = sim.ang_vel[i].x + cfg.gyro_bias.x + d_gyro.sample(&mut rng);
+            let gy = sim.ang_vel[i].y + cfg.gyro_bias.y + d_gyro.sample(&mut rng);
+            let gz = sim.ang_vel[i].z + cfg.gyro_bias.z + d_gyro.sample(&mut rng);
+            data.gyro_meas.push(Vector3::new(gx, gy, gz));
+        } else {
+            data.gyro_meas.push(Vector3::zeros());
+        }
 
         // 3. Magnetometer
-        // Rotate NED field into Body frame
-        // B_body = q_inv * B_ned
-        let mag_body = sim.orientation[i].inverse_transform_vector(&mag_field_ned);
+        if cfg.mag_enabled {
+            let mag_body = sim.orientation[i].inverse_transform_vector(&mag_field_ned);
 
-        let mx = mag_body.x + d_mag.sample(&mut rng);
-        let my = mag_body.y + d_mag.sample(&mut rng);
-        let mz = mag_body.z + d_mag.sample(&mut rng);
-        data.mag_meas.push(Vector3::new(mx, my, mz));
+            let mx = mag_body.x + d_mag.sample(&mut rng);
+            let my = mag_body.y + d_mag.sample(&mut rng);
+            let mz = mag_body.z + d_mag.sample(&mut rng);
+            data.mag_meas.push(Vector3::new(mx, my, mz));
+        } else {
+            data.mag_meas.push(Vector3::zeros());
+        }
 
         // 4. Barometer (Pressure Altitude)
-        // Sim Z is Down (negative altitude)
-        let true_alt = -sim.pos[i].z;
-        let meas_alt = true_alt + d_baro.sample(&mut rng);
-        data.baro_alt.push(meas_alt);
+        if cfg.baro_enabled {
+            let true_alt = -sim.pos[i].z;
+            let meas_alt = true_alt + d_baro.sample(&mut rng);
+            data.baro_alt.push(meas_alt);
+        } else {
+            data.baro_alt.push(0.0);
+        }
 
         // 5. GPS
-        let px = sim.pos[i].x + d_gps_p.sample(&mut rng);
-        let py = sim.pos[i].y + d_gps_p.sample(&mut rng);
-        let pz = sim.pos[i].z + d_gps_p.sample(&mut rng); // GPS Altitude usually noisy
-        data.gps_pos.push(Vector3::new(px, py, pz));
+        if cfg.gps_enabled {
+            let px = sim.pos[i].x + d_gps_p.sample(&mut rng);
+            let py = sim.pos[i].y + d_gps_p.sample(&mut rng);
+            let pz = sim.pos[i].z + d_gps_p.sample(&mut rng); // GPS Altitude usually noisy
+            data.gps_pos.push(Vector3::new(px, py, pz));
 
-        let vx = sim.vel[i].x + d_gps_v.sample(&mut rng);
-        let vy = sim.vel[i].y + d_gps_v.sample(&mut rng);
-        let vz = sim.vel[i].z + d_gps_v.sample(&mut rng);
-        data.gps_vel.push(Vector3::new(vx, vy, vz));
+            let vx = sim.vel[i].x + d_gps_v.sample(&mut rng);
+            let vy = sim.vel[i].y + d_gps_v.sample(&mut rng);
+            let vz = sim.vel[i].z + d_gps_v.sample(&mut rng);
+            data.gps_vel.push(Vector3::new(vx, vy, vz));
+        } else {
+            data.gps_pos.push(Vector3::zeros());
+            data.gps_vel.push(Vector3::zeros());
+        }
     }
 
     data

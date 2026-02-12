@@ -47,9 +47,7 @@ document.addEventListener('alpine:init', () => {
             
             const checkboxes = form.querySelectorAll('input[type=checkbox]');
             checkboxes.forEach(cb => {
-                if (!cb.checked) {
-                    params.append(cb.name, 'false');
-                }
+                params.append(cb.name, cb.checked ? 'true' : 'false');
             });
             
             try {
@@ -74,6 +72,7 @@ document.addEventListener('alpine:init', () => {
             this.renderMass();
             this.renderAccel();
             this.renderGyro();
+            this.populateErrorTable();
         },
         renderTrajectory3D() {
             const data = this.simulationData;
@@ -115,19 +114,17 @@ document.addEventListener('alpine:init', () => {
             const stateColors = { 
                 Pad: '#4CAF50', 
                 Ascent: '#FF9800',
-                Burn: '#FF5722',
                 Coast: '#2196F3', 
                 Descent: '#9C27B0',
-                Recovery: '#9C27B0',
                 Landed: '#795548'
             };
             
             // Get unique state changes for truth path
             const uniqueTruthStates = [];
             const seenTruthStates = new Set();
-            if (data.state_changes) {
-                data.state_changes.forEach(sc => {
-                    const stateName = sc.state || sc.label;
+            if (data.state_changes_sim) {
+                data.state_changes_sim.forEach(sc => {
+                    const stateName = sc.state;
                     if (!seenTruthStates.has(stateName)) {
                         seenTruthStates.add(stateName);
                         uniqueTruthStates.push({...sc, state: stateName});
@@ -136,30 +133,28 @@ document.addEventListener('alpine:init', () => {
             }
             
             // Truth state markers
-            const truthStateTraces = uniqueTruthStates
-                .filter(sc => sc.state !== 'Recovery')
-                .map(sc => {
-                    const idx = Math.min(Math.floor(sc.time / 0.05), data.position_x.length - 1);
-                    return {
-                        x: [data.position_x[idx] || 0],
-                        y: [data.position_y[idx] || 0],
-                        z: [data.position_z[idx] || 0],
-                        mode: 'markers+text',
-                        type: 'scatter3d',
-                        name: `Truth: ${sc.state}`,
-                        text: [sc.state],
-                        textposition: 'top center',
-                        textfont: { size: 10, color: stateColors[sc.state] || '#666' },
-                        marker: { size: 12, color: stateColors[sc.state] || '#666', symbol: 'circle', line: { color: '#000', width: 2 } }
-                    };
-                });
+            const truthStateTraces = uniqueTruthStates.map(sc => {
+                const idx = Math.min(Math.floor(sc.time / 0.05), data.position_x.length - 1);
+                return {
+                    x: [data.position_x[idx] || 0],
+                    y: [data.position_y[idx] || 0],
+                    z: [data.position_z[idx] || 0],
+                    mode: 'markers+text',
+                    type: 'scatter3d',
+                    name: `Sim: ${sc.state}`,
+                    text: [sc.state],
+                    textposition: 'top center',
+                    textfont: { size: 10, color: stateColors[sc.state] || '#666' },
+                    marker: { size: 12, color: stateColors[sc.state] || '#666', symbol: 'circle', line: { color: '#000', width: 2 } }
+                };
+            });
             
             // ESKF state markers
             const uniqueESKFStates = [];
             const seenESKFStates = new Set();
-            if (data.filter_data && data.filter_data.state_changes) {
-                data.filter_data.state_changes.forEach(sc => {
-                    const stateName = sc.state || sc.label;
+            if (data.state_changes_eskf) {
+                data.state_changes_eskf.forEach(sc => {
+                    const stateName = sc.state;
                     if (!seenESKFStates.has(stateName)) {
                         seenESKFStates.add(stateName);
                         uniqueESKFStates.push({...sc, state: stateName});
@@ -167,29 +162,27 @@ document.addEventListener('alpine:init', () => {
                 });
             }
             
-            const eskfStateTraces = uniqueESKFStates
-                .filter(sc => sc.state !== 'Recovery')
-                .map(sc => {
-                    const idx = Math.min(Math.floor(sc.time / 0.05), data.filter_data.est_pos_x.length - 1);
-                    return {
-                        x: [data.filter_data.est_pos_x[idx] || 0],
-                        y: [data.filter_data.est_pos_y[idx] || 0],
-                        z: [data.filter_data.est_pos_z[idx] || 0],
-                        mode: 'markers+text',
-                        type: 'scatter3d',
-                        name: `ESKF: ${sc.state}`,
-                        text: [sc.state],
-                        textposition: 'bottom center',
-                        textfont: { size: 10, color: stateColors[sc.state] || '#666' },
-                        marker: { size: 10, color: stateColors[sc.state] || '#666', symbol: 'diamond', line: { color: '#000', width: 2 } }
-                    };
-                });
+            const eskfStateTraces = uniqueESKFStates.map(sc => {
+                const idx = Math.min(Math.floor(sc.time / 0.05), data.filter_data.est_pos_x.length - 1);
+                return {
+                    x: [data.filter_data.est_pos_x[idx] || 0],
+                    y: [data.filter_data.est_pos_y[idx] || 0],
+                    z: [data.filter_data.est_pos_z[idx] || 0],
+                    mode: 'markers+text',
+                    type: 'scatter3d',
+                    name: `ESKF: ${sc.state}`,
+                    text: [sc.state],
+                    textposition: 'bottom center',
+                    textfont: { size: 10, color: stateColors[sc.state] || '#666' },
+                    marker: { size: 10, color: stateColors[sc.state] || '#666', symbol: 'diamond', line: { color: '#000', width: 2 } }
+                };
+            });
             
             const allTraces = [trueTrace, estTrace, quantTrace, ...truthStateTraces, ...eskfStateTraces];
             
             const xRange = [Math.min(...data.position_x) - 50, Math.max(...data.position_x) + 50];
             const yRange = [Math.min(...data.position_y) - 50, Math.max(...data.position_y) + 50];
-            const zRange = [0, Math.max(...data.position_z) * 1.1];
+            const zRange = [0, Math.min(Math.max(...data.position_z) * 1.1, 50000)];
             
             const layout = {
                 title: {
@@ -215,11 +208,11 @@ document.addEventListener('alpine:init', () => {
         },
         renderAltitude() {
             const data = this.simulationData;
-            this.render2DChart('chart-altitude', data.time, data.altitude, data.filter_data.est_pos_z, 'Altitude vs Time', 'Time (s)', 'Altitude (m)');
+            this.render2DChart('chart-altitude', data.time, data.altitude, null, 'Altitude vs Time', 'Time (s)', 'Altitude (m)');
         },
         renderVelocity() {
             const data = this.simulationData;
-            this.render2DChart('chart-velocity', data.time, data.velocity, data.filter_data.est_vel_mag, 'Velocity vs Time', 'Time (s)', 'Velocity (m/s)');
+            this.render2DChart('chart-velocity', data.time, data.velocity, null, 'Velocity vs Time', 'Time (s)', 'Velocity (m/s)');
         },
         renderAcceleration() {
             const data = this.simulationData;
@@ -253,7 +246,15 @@ document.addEventListener('alpine:init', () => {
             }
             
             const data = this.simulationData;
-            const shapes = data.state_changes.map(sc => ({
+            const uniqueStates = [];
+            const seen = new Set();
+            data.state_changes_sim.forEach(sc => {
+                if (!seen.has(sc.state)) {
+                    seen.add(sc.state);
+                    uniqueStates.push(sc);
+                }
+            });
+            const shapes = uniqueStates.map(sc => ({
                 type: 'line',
                 x0: sc.time,
                 x1: sc.time,
@@ -262,10 +263,23 @@ document.addEventListener('alpine:init', () => {
                 line: { color: '#9C27B0', width: 2, dash: 'dash' }
             }));
             
-            const annotations = data.state_changes.map((sc, idx) => ({
+            const annotations = uniqueStates.map((sc, idx) => ({
                 x: sc.time,
                 y: Math.max(...trueData) * (0.9 - idx * 0.15),
-                text: sc.state || sc.label,
+                text: sc.description,
+                showarrow: true,
+                arrowhead: 2,
+                ax: 40,
+                ay: 0,
+                bgcolor: 'rgba(255,255,255,0.9)',
+                bordercolor: '#9C27B0',
+                borderwidth: 1
+            }));
+            
+            const annotations = data.state_changes_sim.map((sc, idx) => ({
+                x: sc.time,
+                y: Math.max(...trueData) * (0.9 - idx * 0.15),
+                text: sc.state,
                 showarrow: true,
                 arrowhead: 2,
                 ax: 40,
@@ -362,6 +376,32 @@ document.addEventListener('alpine:init', () => {
             };
             
             Plotly.newPlot('chart-gyro', traces, layout, {responsive: true});
+        },
+        populateErrorTable() {
+            const data = this.simulationData;
+            if (!data.error_stats) return;
+            const table = document.getElementById('error-table');
+            const tbody = table.querySelector('tbody');
+            tbody.innerHTML = '';
+            const stats = data.error_stats;
+            const rows = [
+                ['Position N', stats.pos_n_min, stats.pos_n_max, stats.pos_n_mean, stats.pos_n_std, stats.pos_n_rmse],
+                ['Position E', stats.pos_e_min, stats.pos_e_max, stats.pos_e_mean, stats.pos_e_std, stats.pos_e_rmse],
+                ['Position D', stats.pos_d_min, stats.pos_d_max, stats.pos_d_mean, stats.pos_d_std, stats.pos_d_rmse],
+                ['Velocity N', stats.vel_n_min, stats.vel_n_max, stats.vel_n_mean, stats.vel_n_std, stats.vel_n_rmse],
+                ['Velocity E', stats.vel_e_min, stats.vel_e_max, stats.vel_e_mean, stats.vel_e_std, stats.vel_e_rmse],
+                ['Velocity D', stats.vel_d_min, stats.vel_d_max, stats.vel_d_mean, stats.vel_d_std, stats.vel_d_rmse],
+                ['3D Position', stats.pos_3d_min, stats.pos_3d_max, stats.pos_3d_mean, stats.pos_3d_std, stats.pos_3d_rmse],
+            ];
+            rows.forEach(row => {
+                const tr = document.createElement('tr');
+                row.forEach(cell => {
+                    const td = document.createElement('td');
+                    td.textContent = this.formatStat(cell);
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
         }
     }));
 });
@@ -369,10 +409,10 @@ document.addEventListener('alpine:init', () => {
 // Rocket presets
 const rocketPresets = {
     '30km': {
-        dry_mass: 50,
-        propellant_mass: 150,
-        thrust: 15000,
-        burn_time: 25,
+        dry_mass: 20,
+        propellant_mass: 750,
+        thrust: 160000,
+        burn_time: 10,
         drag_coeff: 0.40,
         ref_area: 0.0324,
         wind_north: 3,

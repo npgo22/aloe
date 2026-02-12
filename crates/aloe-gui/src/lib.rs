@@ -7,16 +7,16 @@
 //! - Sensor data visualization
 //! - Filter error statistics
 
-use axum::{
-    routing::get,
-    Router,
-    extract::Query,
-    response::Json,
+use aloe_sim::{
+    filter::{run_filter, FilterConfig, FilterResult},
+    sensor::{generate_sensor_data, SensorConfig, SensorData},
+    sim::{simulate_6dof, RocketParams, SimResult},
 };
 use serde::Serialize;
 use std::collections::HashMap;
 use tower_http::services::ServeDir;
 use nalgebra::Vector3;
+use axum::{Router, routing::get, extract::Query, Json};
 
 /// Creates the Axum router with all routes
 pub fn create_router() -> Router {
@@ -48,6 +48,12 @@ struct SimConfig {
     // Sensor params
     noise_scale: f64,
     seed: u64,
+    no_sensors: bool,
+    accel_enabled: bool,
+    gyro_enabled: bool,
+    mag_enabled: bool,
+    baro_enabled: bool,
+    gps_enabled: bool,
 }
 
 impl Default for SimConfig {
@@ -68,6 +74,12 @@ impl Default for SimConfig {
             air_density: 1.225,
             noise_scale: 1.0,
             seed: 42,
+            no_sensors: false,
+            accel_enabled: true,
+            gyro_enabled: true,
+            mag_enabled: true,
+            baro_enabled: true,
+            gps_enabled: true,
         }
     }
 }
@@ -103,6 +115,13 @@ fn parse_config(params: &HashMap<String, String>) -> SimConfig {
         config.seed = seed;
     }
     
+    parse_param!(no_sensors, "no_sensors", bool);
+    parse_param!(accel_enabled, "accel_enabled", bool);
+    parse_param!(gyro_enabled, "gyro_enabled", bool);
+    parse_param!(mag_enabled, "mag_enabled", bool);
+    parse_param!(baro_enabled, "baro_enabled", bool);
+    parse_param!(gps_enabled, "gps_enabled", bool);
+    
     config
 }
 
@@ -135,8 +154,9 @@ struct FullSimulationResponse {
     position_x: Vec<f64>,
     position_y: Vec<f64>,
     position_z: Vec<f64>,
-    state_changes: Vec<StateChange>,
-    sensor_data: SensorData,
+    state_changes_sim: Vec<StateChange>,
+    state_changes_eskf: Vec<StateChange>,
+    sensor_data: GuiSensorData,
     filter_data: FilterData,
     error_stats: ErrorStats,
     success: bool,
@@ -150,7 +170,7 @@ struct StateChange {
 }
 
 #[derive(Serialize)]
-struct SensorData {
+struct GuiSensorData {
     accel_x: Vec<f64>,
     accel_y: Vec<f64>,
     accel_z: Vec<f64>,
@@ -226,233 +246,210 @@ struct ChartData {
 
 /// Run full 6-DOF simulation
 fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
-    let dt = 0.05;
-    let total_time = 120.0;
-    let n = (total_time / dt) as usize;
-    
-    let mut time = Vec::with_capacity(n);
-    let mut altitude = Vec::with_capacity(n);
-    let mut velocity = Vec::with_capacity(n);
-    let mut acceleration = Vec::with_capacity(n);
-    let mut force = Vec::with_capacity(n);
-    let mut mass = Vec::with_capacity(n);
-    let mut pos_x = Vec::with_capacity(n);
-    let mut pos_y = Vec::with_capacity(n);
-    let mut pos_z = Vec::with_capacity(n);
-    
-    let mut state_changes: Vec<StateChange> = vec![
-        StateChange { time: 0.0, state: "Pad".to_string(), description: "On Pad".to_string() },
-    ];
-    
-    let mut current_pos = Vector3::new(0.0, 0.0, 0.0);
-    let mut current_vel = Vector3::new(0.0, 0.0, 0.0);
-    let mut current_mass = config.dry_mass + config.propellant_mass;
-    let mass_flow = config.propellant_mass / config.burn_time;
-    let wind = Vector3::new(config.wind_north, config.wind_east, 0.0);
-    
-    let mut last_state = "Pad";
-    
-    for i in 0..n {
-        let t = i as f64 * dt;
-        time.push(t);
-        
-        // Determine flight phase
-        let (thrust_active, state) = if t < config.launch_delay {
-            (false, "Pad")
-        } else if t < config.launch_delay + config.burn_time {
-            (true, "Burn")
-        } else if current_vel.norm() > 10.0 {
-            (false, "Coast")
-        } else {
-            (false, "Recovery")
-        };
-        
-        // Track state changes
-        if state != last_state {
-            state_changes.push(StateChange {
-                time: t,
-                state: state.to_string(),
-                description: match state {
-                    "Burn" => "Launch",
-                    "Coast" => "Burnout",
-                    "Recovery" => "Apogee/Landing",
-                    _ => state,
-                }.to_string(),
-            });
-            last_state = state;
-        }
-        
-        // Calculate thrust
-        let current_thrust = if thrust_active { config.thrust } else { 0.0 };
-        if thrust_active {
-            current_mass -= mass_flow * dt;
-            current_mass = current_mass.max(config.dry_mass);
-        }
-        
-        // Aerodynamics
-        let air_vel = current_vel - wind;
-        let air_speed = air_vel.norm();
-        let drag_force = 0.5 * config.air_density * air_speed * air_speed * config.ref_area * config.drag_coeff;
-        let drag_accel = if air_speed > 0.1 {
-            -drag_force / current_mass * air_vel / air_speed
-        } else {
-            Vector3::zeros()
-        };
-        
-        // Gravity
-        let gravity_accel = Vector3::new(0.0, 0.0, -config.gravity);
-        
-        // Thrust acceleration (upward)
-        let thrust_accel = if thrust_active {
-            Vector3::new(0.0, 0.0, current_thrust / current_mass)
-        } else {
-            Vector3::zeros()
-        };
-        
-        // Total acceleration
-        let total_accel = thrust_accel + drag_accel + gravity_accel;
-        
-        // Integration
-        current_vel += total_accel * dt;
-        current_pos += current_vel * dt;
-        
-        // Ground collision
-        if current_pos.z < 0.0 {
-            current_pos.z = 0.0;
-            current_vel = Vector3::zeros();
-        }
-        
-        // Store data
-        altitude.push(current_pos.z);
-        velocity.push(current_vel.norm());
-        acceleration.push(total_accel.norm());
-        force.push(current_thrust - drag_force * current_mass * air_speed.signum());
-        mass.push(current_mass);
-        pos_x.push(current_pos.x);
-        pos_y.push(current_pos.y);
-        pos_z.push(current_pos.z);
-    }
-    
-    // Generate simulated sensor data
-    let sensor_data = generate_sensor_data(&time, &acceleration, &config);
-    
-    // Generate filter estimates (with some error)
-    let filter_data = generate_filter_data(&pos_x, &pos_y, &pos_z, &velocity, config.noise_scale);
-    
-    // Calculate error statistics
-    let error_stats = calculate_error_stats(
-        &pos_x, &pos_y, &pos_z,
-        &filter_data.est_pos_x, &filter_data.est_pos_y, &filter_data.est_pos_z,
-        &velocity, &filter_data.est_vel_mag
-    );
-    
-    FullSimulationResponse {
-        time,
-        altitude,
-        velocity,
-        acceleration,
-        force,
-        mass,
-        position_x: pos_x,
-        position_y: pos_y,
-        position_z: pos_z,
-        state_changes,
-        sensor_data,
-        filter_data,
-        error_stats,
-        success: true,
-    }
-}
-
-fn generate_sensor_data(time: &[f64], accel: &[f64], config: &SimConfig) -> SensorData {
-    use std::f64::consts::PI;
-    
-    let mut rng = config.seed;
-    
-    let mut accel_x = Vec::with_capacity(accel.len());
-    let mut accel_y = Vec::with_capacity(accel.len());
-    let mut accel_z = Vec::with_capacity(accel.len());
-    let mut gyro_x = Vec::with_capacity(time.len());
-    let mut gyro_y = Vec::with_capacity(time.len());
-    let mut gyro_z = Vec::with_capacity(time.len());
-    let mut baro_alt = Vec::with_capacity(time.len());
-    
-    for a in accel {
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let noise = (rng as f64 / u64::MAX as f64) * 2.0 - 1.0;
-        accel_x.push(0.0 + noise * 0.1 * config.noise_scale);
-        
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let noise = (rng as f64 / u64::MAX as f64) * 2.0 - 1.0;
-        accel_y.push(0.0 + noise * 0.1 * config.noise_scale);
-        
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let noise = (rng as f64 / u64::MAX as f64) * 2.0 - 1.0;
-        accel_z.push(*a + noise * 0.5 * config.noise_scale);
-    }
-    
-    for _ in time {
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let noise = (rng as f64 / u64::MAX as f64) * 2.0 - 1.0;
-        gyro_x.push(0.0 + noise * 0.01 * config.noise_scale);
-        
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let noise = (rng as f64 / u64::MAX as f64) * 2.0 - 1.0;
-        gyro_y.push(0.0 + noise * 0.01 * config.noise_scale);
-        
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let noise = (rng as f64 / u64::MAX as f64) * 2.0 - 1.0;
-        gyro_z.push(config.spin_rate * PI / 180.0 + noise * 0.01 * config.noise_scale);
-    }
-    
-    for i in 0..time.len() {
-        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let noise = (rng as f64 / u64::MAX as f64) * 2.0 - 1.0;
-        baro_alt.push(accel.get(i).copied().unwrap_or(0.0) + noise * 2.0 * config.noise_scale);
-    }
-    
-    SensorData {
-        accel_x,
-        accel_y,
-        accel_z,
-        gyro_x,
-        gyro_y,
-        gyro_z,
-        baro_alt,
-    }
-}
-
-fn generate_filter_data(
-    pos_x: &[f64],
-    pos_y: &[f64],
-    pos_z: &[f64],
-    velocity: &[f64],
-    _noise_scale: f64,
-) -> FilterData {
-    // Simple error simulation without rand crate
-    let error = |val: f64, idx: usize| {
-        let pseudo_random = ((idx * 9301 + 49297) % 233280) as f64 / 233280.0;
-        val + (val * 0.05 + 1.0) * (pseudo_random - 0.5) * 2.0
+    let rocket_params = RocketParams {
+        dry_mass: config.dry_mass,
+        propellant_mass: config.propellant_mass,
+        inertia_tensor: Vector3::new(0.1, 10.0, 10.0), // Approximate
+        cg_location: 1.5,
+        cp_location: 2.0,
+        ref_area: config.ref_area,
+        drag_coeff_axial: config.drag_coeff,
+        normal_force_coeff: 12.0,
+        thrust_curve: vec![(0.0, config.thrust), (config.burn_time, config.thrust), (config.burn_time + 0.1, 0.0)],
+        burn_time: config.burn_time,
+        nozzle_location: 3.0,
+        gravity: config.gravity,
+        air_density_sea_level: config.air_density,
+        launch_rod_length: 2.0,
+        wind_velocity_ned: Vector3::new(config.wind_north, config.wind_east, 0.0),
+        launch_delay: config.launch_delay,
+        spin_rate: config.spin_rate,
+        thrust_cant: config.thrust_cant,
     };
-    
-    let est_vel_x: Vec<f64> = velocity.iter().enumerate().map(|(i, v)| error(*v * 0.1, i + 3000)).collect();
-    let est_vel_y: Vec<f64> = velocity.iter().enumerate().map(|(i, v)| error(*v * 0.1, i + 4000)).collect();
-    let est_vel_z: Vec<f64> = velocity.iter().enumerate().map(|(i, v)| error(*v * 0.8, i + 5000)).collect();
-    
-    let est_vel_mag: Vec<f64> = est_vel_x.iter()
-        .zip(&est_vel_y)
-        .zip(&est_vel_z)
-        .map(|((x, y), z)| (x * x + y * y + z * z).sqrt())
-        .collect();
-    
-    FilterData {
-        est_pos_x: pos_x.iter().enumerate().map(|(i, p)| error(*p, i)).collect(),
-        est_pos_y: pos_y.iter().enumerate().map(|(i, p)| error(*p, i + 1000)).collect(),
-        est_pos_z: pos_z.iter().enumerate().map(|(i, p)| error(*p, i + 2000)).collect(),
-        est_vel_x,
-        est_vel_y,
-        est_vel_z,
-        est_vel_mag,
+
+    let sim_result = simulate_6dof(&rocket_params);
+
+    // Convert SimResult to the GUI format
+        let time: Vec<f64> = sim_result.time.clone();
+    let altitude: Vec<f64> = sim_result.pos.iter().map(|p| -p.z).collect(); // Convert from NED to altitude
+    let velocity: Vec<f64> = sim_result.vel.iter().map(|v| v.norm()).collect();
+    let acceleration: Vec<f64> = sim_result.accel_body.iter().map(|a| a.x).collect(); // Axial acceleration
+    let force: Vec<f64> = sim_result.accel_body.iter().zip(&sim_result.vel).map(|(a, _)| a.x * (rocket_params.dry_mass + rocket_params.propellant_mass)).collect(); // Approximate
+    let mass: Vec<f64> = time.iter().map(|&t| {
+        if t < config.burn_time {
+            rocket_params.dry_mass + rocket_params.propellant_mass * (1.0 - t / config.burn_time).max(0.0)
+        } else {
+            rocket_params.dry_mass
+        }
+    }).collect();
+    let position_x: Vec<f64> = sim_result.pos.iter().map(|p| p.x).collect();
+    let position_y: Vec<f64> = sim_result.pos.iter().map(|p| p.y).collect();
+    let position_z: Vec<f64> = sim_result.pos.iter().map(|p| -p.z).collect(); // NED to altitude
+
+    // Generate state changes for sim
+    let state_changes_sim = generate_state_changes(&time, &sim_result.pos, &sim_result.vel);
+
+    if config.no_sensors {
+        let sensor_data = GuiSensorData {
+            accel_x: vec![],
+            accel_y: vec![],
+            accel_z: vec![],
+            gyro_x: vec![],
+            gyro_y: vec![],
+            gyro_z: vec![],
+            baro_alt: vec![],
+        };
+        let filter_data = FilterData {
+            est_pos_x: vec![],
+            est_pos_y: vec![],
+            est_pos_z: vec![],
+            est_vel_x: vec![],
+            est_vel_y: vec![],
+            est_vel_z: vec![],
+            est_vel_mag: vec![],
+        };
+        let error_stats = ErrorStats {
+            pos_n_min: 0.0,
+            pos_n_max: 0.0,
+            pos_n_mean: 0.0,
+            pos_n_std: 0.0,
+            pos_n_rmse: 0.0,
+            pos_e_min: 0.0,
+            pos_e_max: 0.0,
+            pos_e_mean: 0.0,
+            pos_e_std: 0.0,
+            pos_e_rmse: 0.0,
+            pos_d_min: 0.0,
+            pos_d_max: 0.0,
+            pos_d_mean: 0.0,
+            pos_d_std: 0.0,
+            pos_d_rmse: 0.0,
+            vel_n_min: 0.0,
+            vel_n_max: 0.0,
+            vel_n_mean: 0.0,
+            vel_n_std: 0.0,
+            vel_n_rmse: 0.0,
+            vel_e_min: 0.0,
+            vel_e_max: 0.0,
+            vel_e_mean: 0.0,
+            vel_e_std: 0.0,
+            vel_e_rmse: 0.0,
+            vel_d_min: 0.0,
+            vel_d_max: 0.0,
+            vel_d_mean: 0.0,
+            vel_d_std: 0.0,
+            vel_d_rmse: 0.0,
+            pos_3d_min: 0.0,
+            pos_3d_max: 0.0,
+            pos_3d_mean: 0.0,
+            pos_3d_std: 0.0,
+            pos_3d_rmse: 0.0,
+        };
+        FullSimulationResponse {
+            time,
+            altitude,
+            velocity,
+            acceleration,
+            force,
+            mass,
+            position_x,
+            position_y,
+            position_z,
+            state_changes_sim,
+            state_changes_eskf: vec![],
+            sensor_data,
+            filter_data,
+            error_stats,
+            success: true,
+        }
+    } else {
+        // Generate sensor data
+        let sensor_config = SensorConfig {
+            noise_scale: config.noise_scale,
+            accel_noise_std: 0.01,
+            gyro_noise_std: 0.001,
+            mag_noise_std: 0.001,
+            baro_noise_std: 0.1,
+            gps_pos_noise_std: 1.0,
+            gps_vel_noise_std: 0.1,
+            accel_bias: Vector3::zeros(),
+            gyro_bias: Vector3::zeros(),
+            seed: config.seed,
+            accel_enabled: config.accel_enabled,
+            gyro_enabled: config.gyro_enabled,
+            mag_enabled: config.mag_enabled,
+            baro_enabled: config.baro_enabled,
+            gps_enabled: config.gps_enabled,
+        };
+        let sensor_data_sim = generate_sensor_data(&sim_result, &sensor_config);
+
+        // Generate sensor data for GUI
+        let gui_sensor_data = GuiSensorData {
+            accel_x: sensor_data_sim.accel_meas.iter().map(|v| v.x).collect(),
+            accel_y: sensor_data_sim.accel_meas.iter().map(|v| v.y).collect(),
+            accel_z: sensor_data_sim.accel_meas.iter().map(|v| v.z).collect(),
+            gyro_x: sensor_data_sim.gyro_meas.iter().map(|v| v.x).collect(),
+            gyro_y: sensor_data_sim.gyro_meas.iter().map(|v| v.y).collect(),
+            gyro_z: sensor_data_sim.gyro_meas.iter().map(|v| v.z).collect(),
+            baro_alt: sensor_data_sim.baro_alt.clone(),
+        };
+
+        // Run filter (simplified)
+        let filter_config = FilterConfig::default();
+        let filter_result = run_filter(&sim_result, &sensor_data_sim, &filter_config);
+
+        let filter_data = FilterData {
+            est_pos_x: filter_result.position.iter().map(|p| p.x).collect(),
+            est_pos_y: filter_result.position.iter().map(|p| p.y).collect(),
+            est_pos_z: filter_result.position.iter().map(|p| p.z).collect(),
+            est_vel_x: filter_result.velocity.iter().map(|v| v.x).collect(),
+            est_vel_y: filter_result.velocity.iter().map(|v| v.y).collect(),
+            est_vel_z: filter_result.velocity.iter().map(|v| v.z).collect(),
+            est_vel_mag: vec![], // Will be computed
+        };
+        let est_vel_mag: Vec<f64> = filter_data.est_vel_x.iter()
+            .zip(&filter_data.est_vel_y)
+            .zip(&filter_data.est_vel_z)
+            .map(|((x, y), z)| (x * x + y * y + z * z).sqrt())
+            .collect();
+
+        let filter_data = FilterData {
+            est_pos_x: filter_data.est_pos_x,
+            est_pos_y: filter_data.est_pos_y,
+            est_pos_z: filter_data.est_pos_z,
+            est_vel_x: filter_data.est_vel_x,
+            est_vel_y: filter_data.est_vel_y,
+            est_vel_z: filter_data.est_vel_z,
+            est_vel_mag,
+        };
+
+        // Generate state changes for ESKF
+        let state_changes_eskf = generate_state_changes(&time, &filter_result.position, &filter_result.velocity);
+
+        // Calculate error statistics
+        let error_stats = calculate_error_stats(
+            &position_x, &position_y, &position_z,
+            &filter_data.est_pos_x, &filter_data.est_pos_y, &filter_data.est_pos_z,
+            &velocity, &filter_data.est_vel_mag
+        );
+
+        FullSimulationResponse {
+            time,
+            altitude,
+            velocity,
+            acceleration,
+            force,
+            mass,
+            position_x,
+            position_y,
+            position_z,
+            state_changes_sim,
+            state_changes_eskf,
+            sensor_data: gui_sensor_data,
+            filter_data,
+            error_stats,
+            success: true,
+        }
     }
 }
 
@@ -524,6 +521,47 @@ fn calculate_error_stats(
         vel_d_min, vel_d_max, vel_d_mean, vel_d_std, vel_d_rmse,
         pos_3d_min, pos_3d_max, pos_3d_mean, pos_3d_std, pos_3d_rmse,
     }
+}
+
+fn generate_state_changes(time: &[f64], pos: &[Vector3<f64>], vel: &[Vector3<f64>]) -> Vec<StateChange> {
+    let mut state_changes = vec![StateChange { time: 0.0, state: "Pad".to_string(), description: "On Pad".to_string() }];
+    let mut last_state = "Pad";
+    for i in 0..time.len() {
+        let t = time[i];
+        let vel_mag = vel[i].norm();
+        let alt = -pos[i].z;
+        let on_ground = alt < 0.1 && vel_mag < 1.0;
+
+        let state = if t < 1.0 {
+            "Pad"
+        } else if t < 6.0 {
+            "Ascent"
+        } else if vel_mag > 5.0 && !on_ground {
+            "Coast"
+        } else if alt > 10.0 {
+            "Descent"
+        } else {
+            "Landed"
+        };
+
+        if state != last_state {
+            state_changes.push(StateChange {
+                time: t,
+                state: state.to_string(),
+                description: match state {
+                    "Pad" => "On Pad",
+                    "Ascent" => "Ascent",
+                    "Coast" => "Coast",
+                    "Descent" => "Descent",
+                    "Landed" => "Landed",
+                    _ => state,
+                }.to_string(),
+            });
+            last_state = state;
+        }
+    }
+
+    state_changes
 }
 
 fn generate_chart_data(chart_type: &str, config: &SimConfig) -> ChartData {

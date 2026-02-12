@@ -345,6 +345,11 @@ fn build_sensor_config(args: &Args) -> SensorConfig {
         accel_bias: Vector3::zeros(),
         gyro_bias: Vector3::zeros(),
         seed: args.seed,
+        accel_enabled: true,
+        gyro_enabled: true,
+        mag_enabled: true,
+        baro_enabled: true,
+        gps_enabled: true,
     }
 }
 
@@ -475,8 +480,8 @@ fn compute_tune_metrics(sim: &SimResult, filter: &FilterResult) -> TuneMetrics {
         if i >= filter.time.len() {
             break;
         }
-        // Truth position in NED: N = sim.pos.x, E = sim.pos.z, D = -sim.pos.y
-        let truth_pos = Vector3::new(sim.pos[i].x, sim.pos[i].z, -sim.pos[i].y);
+        // Truth position in NED: N = sim.pos.x, E = sim.pos.y, D = sim.pos.z
+        let truth_pos = Vector3::new(sim.pos[i].x, sim.pos[i].y, sim.pos[i].z);
         let est_pos = &filter.position[i];
         let pos_err = truth_pos - Vector3::new(est_pos.x, est_pos.y, est_pos.z);
         pos_err_sq += pos_err.norm_squared();
