@@ -620,6 +620,8 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
         });
 
         let optimised_path = args.output_dir.join("optimised_tuning.json");
+        // Ensure output directory exists before writing the optimised tuning file
+        std::fs::create_dir_all(&args.output_dir)?;
         std::fs::write(&optimised_path, serde_json::to_string_pretty(&optimised)?)?;
         println!("Optimised tuning written to {:?}", optimised_path);
     } else {
