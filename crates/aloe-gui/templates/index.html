@@ -31,14 +31,26 @@
                 <div class="bg-white rounded-lg shadow-md p-6">
                     <div class="space-y-2">
                         <p class="text-sm font-medium text-stone-600 mb-2">Quick Presets:</p>
-                        <div class="grid grid-cols-1 gap-2">
-                            <button type="button" onclick="applyPreset('30km')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
-                                30 km (rip)
+                        <div class="grid grid-cols-2 gap-2">
+                            <button type="button" onclick="applyPreset('30k-ft')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
+                                30k ft (9.1 km)
                             </button>
-                            <button type="button" onclick="applyPreset('12km')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
-                                12 km
+                            <button type="button" onclick="applyPreset('15k-ft')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
+                                15k ft (4.6 km)
                             </button>
-                            <button type="button" onclick="applyPreset('high-drag')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
+                            <button type="button" onclick="applyPreset('12k-ft')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
+                                12k ft (3.7 km)
+                            </button>
+                            <button type="button" onclick="applyPreset('10k-ft')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
+                                10k ft (3.0 km)
+                            </button>
+                            <button type="button" onclick="applyPreset('5k-ft')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
+                                5k ft (1.5 km)
+                            </button>
+                            <button type="button" onclick="applyPreset('3k-ft')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left">
+                                3k ft (914 m)
+                            </button>
+                            <button type="button" onclick="applyPreset('high-drag')" class="px-3 py-2 bg-stone-200 text-stone-700 rounded-md text-sm font-medium hover:bg-stone-300 transition-colors text-left col-span-2">
                                 High-drag test
                             </button>
                         </div>
@@ -100,13 +112,9 @@
                             <label class="block text-sm font-medium text-stone-700 mb-1">Wind North (m/s)</label>
                             <input type="number" name="wind_north" value="5" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
                         </div>
-                        <div>
+                        <div class="col-span-2">
                             <label class="block text-sm font-medium text-stone-700 mb-1">Wind East (m/s)</label>
                             <input type="number" name="wind_east" value="0" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
-                        </div>
-                        <div>
-                            <label class="block text-sm font-medium text-stone-700 mb-1">Crosswind (m/s)</label>
-                            <input type="number" name="crosswind" value="0" step="0.1" class="w-full px-3 py-2 border border-stone-300 rounded-md focus:outline-none focus:ring-2 focus:ring-stone-500">
                         </div>
                         <div class="col-span-2">
                             <label class="block text-sm font-medium text-stone-700 mb-1">Air Density (kg/m³)</label>
@@ -304,7 +312,20 @@
                         <div id="chart-gps" class="w-full h-[350px]"></div>
                     </div>
                 </div>
-                
+
+                <!-- Filter Error Time-Series Plots -->
+                <div class="grid grid-cols-2 gap-6 mt-6">
+                    <div class="bg-white rounded-lg shadow-md p-4">
+                        <div id="chart-error-position" class="w-full h-[350px]"></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-4">
+                        <div id="chart-error-velocity" class="w-full h-[350px]"></div>
+                    </div>
+                    <div class="bg-white rounded-lg shadow-md p-4 col-span-2">
+                        <div id="chart-error-altitude" class="w-full h-[350px]"></div>
+                    </div>
+                </div>
+
                   <!-- Statistics Table -->
                   <template x-if="simulationData && simulationData.error_stats" x-cloak>
                   <div class="bg-white rounded-lg shadow-md p-6">
@@ -326,85 +347,85 @@
                              <tbody>
                                   <!-- ESKF Stats -->
                                   <template x-for="row in [
-                                      { stage: 'ESKF vs True', qty: 'North Position (m)', mean: 'pos_n_mean', std: 'pos_n_std', mae: 'pos_n_mae', rmse: 'pos_n_rmse', p95: 'pos_n_p95', n: 'n' },
-                                      { stage: 'ESKF vs True', qty: 'East Position (m)', mean: 'pos_e_mean', std: 'pos_e_std', mae: 'pos_e_mae', rmse: 'pos_e_rmse', p95: 'pos_e_p95', n: 'n' },
-                                      { stage: 'ESKF vs True', qty: 'Down Position (m)', mean: 'pos_d_mean', std: 'pos_d_std', mae: 'pos_d_mae', rmse: 'pos_d_rmse', p95: 'pos_d_p95', n: 'n' },
-                                      { stage: 'ESKF vs True', qty: 'North Velocity (m/s)', mean: 'vel_n_mean', std: 'vel_n_std', mae: 'vel_n_mae', rmse: 'vel_n_rmse', p95: 'vel_n_p95', n: 'n' },
-                                      { stage: 'ESKF vs True', qty: 'East Velocity (m/s)', mean: 'vel_e_mean', std: 'vel_e_std', mae: 'vel_e_mae', rmse: 'vel_e_rmse', p95: 'vel_e_p95', n: 'n' },
-                                      { stage: 'ESKF vs True', qty: 'Down Velocity (m/s)', mean: 'vel_d_mean', std: 'vel_d_std', mae: 'vel_d_mae', rmse: 'vel_d_rmse', p95: 'vel_d_p95', n: 'n' },
-                                      { stage: 'ESKF vs True', qty: '3D Position (m)', mean: 'pos_3d_mean', std: 'pos_3d_std', mae: 'pos_3d_mae', rmse: 'pos_3d_rmse', p95: 'pos_3d_p95', n: 'n', bold: true }
+                                      { stage: 'ESKF vs True', qty: 'North Position (m)', field: 'pos_n' },
+                                      { stage: 'ESKF vs True', qty: 'East Position (m)', field: 'pos_e' },
+                                      { stage: 'ESKF vs True', qty: 'Down Position (m)', field: 'pos_d' },
+                                      { stage: 'ESKF vs True', qty: 'North Velocity (m/s)', field: 'vel_n' },
+                                      { stage: 'ESKF vs True', qty: 'East Velocity (m/s)', field: 'vel_e' },
+                                      { stage: 'ESKF vs True', qty: 'Down Velocity (m/s)', field: 'vel_d' },
+                                      { stage: 'ESKF vs True', qty: '3D Position (m)', field: 'pos_3d', bold: true }
                                   ]" :key="row.qty">
                                      <tr class="border-b border-stone-100" :class="row.bold ? 'bg-stone-50 font-semibold' : ''">
                                           <td class="py-1 px-2 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                           <td class="py-1 px-2 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.eskf[row.mean]) : '-'"></td>
-                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.eskf[row.std]) : '-'"></td>
-                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.eskf[row.mae]) : '-'"></td>
-                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.eskf[row.rmse]) : '-'"></td>
-                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatStat(simulationData.error_stats.eskf[row.p95]) : '-'"></td>
-                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats ? formatInt(simulationData.error_stats.eskf[row.n]) : '-'"></td>
+                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.eskf?.[row.field] ? formatStat(simulationData.error_stats.eskf[row.field].mean) : '-'"></td>
+                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.eskf?.[row.field] ? formatStat(simulationData.error_stats.eskf[row.field].std) : '-'"></td>
+                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.eskf?.[row.field] ? formatStat(simulationData.error_stats.eskf[row.field].mae) : '-'"></td>
+                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.eskf?.[row.field] ? formatStat(simulationData.error_stats.eskf[row.field].rmse) : '-'"></td>
+                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.eskf?.[row.field] ? formatStat(simulationData.error_stats.eskf[row.field].p95) : '-'"></td>
+                                           <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.eskf?.[row.field] ? formatInt(simulationData.error_stats.eskf[row.field].n) : '-'"></td>
                                      </tr>
                                  </template>
                                  
                                   <!-- Quantized Flight Stats -->
                                   <template x-for="row in [
-                                      { stage: 'ESKF vs Quantized', qty: 'North Position (m)', mean: 'pos_n_mean', std: 'pos_n_std', mae: 'pos_n_mae', rmse: 'pos_n_rmse', p95: 'pos_n_p95', n: 'n' },
-                                      { stage: 'ESKF vs Quantized', qty: 'East Position (m)', mean: 'pos_e_mean', std: 'pos_e_std', mae: 'pos_e_mae', rmse: 'pos_e_rmse', p95: 'pos_e_p95', n: 'n' },
-                                      { stage: 'ESKF vs Quantized', qty: 'Altitude AGL (m)', mean: 'alt_mean', std: 'alt_std', mae: 'alt_mae', rmse: 'alt_rmse', p95: 'alt_p95', n: 'n' },
-                                      { stage: 'ESKF vs Quantized', qty: 'North Velocity (m/s)', mean: 'vel_n_mean', std: 'vel_n_std', mae: 'vel_n_mae', rmse: 'vel_n_rmse', p95: 'vel_n_p95', n: 'n' },
-                                      { stage: 'ESKF vs Quantized', qty: 'East Velocity (m/s)', mean: 'vel_e_mean', std: 'vel_e_std', mae: 'vel_e_mae', rmse: 'vel_e_rmse', p95: 'vel_e_p95', n: 'n' },
-                                      { stage: 'ESKF vs Quantized', qty: 'Down Velocity (m/s)', mean: 'vel_d_mean', std: 'vel_d_std', mae: 'vel_d_mae', rmse: 'vel_d_rmse', p95: 'vel_d_p95', n: 'n' },
-                                      { stage: 'ESKF vs Quantized', qty: '3D Position (m)', mean: 'pos_3d_mean', std: 'pos_3d_std', mae: 'pos_3d_mae', rmse: 'pos_3d_rmse', p95: 'pos_3d_p95', n: 'n', bold: true }
+                                      { stage: 'ESKF vs Quantized', qty: 'North Position (m)', field: 'pos_n' },
+                                      { stage: 'ESKF vs Quantized', qty: 'East Position (m)', field: 'pos_e' },
+                                      { stage: 'ESKF vs Quantized', qty: 'Altitude AGL (m)', field: 'alt' },
+                                      { stage: 'ESKF vs Quantized', qty: 'North Velocity (m/s)', field: 'vel_n' },
+                                      { stage: 'ESKF vs Quantized', qty: 'East Velocity (m/s)', field: 'vel_e' },
+                                      { stage: 'ESKF vs Quantized', qty: 'Down Velocity (m/s)', field: 'vel_d' },
+                                      { stage: 'ESKF vs Quantized', qty: '3D Position (m)', field: 'pos_3d', bold: true }
                                   ]" :key="row.qty">
                                      <tr class="border-b border-stone-100" :class="row.bold ? 'bg-stone-50 font-semibold' : ''">
                                           <td class="py-1 px-2 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                           <td class="py-1 px-2 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quantized_flight ? formatStat(simulationData.error_stats.quantized_flight[row.mean]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quantized_flight ? formatStat(simulationData.error_stats.quantized_flight[row.std]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quantized_flight ? formatStat(simulationData.error_stats.quantized_flight[row.mae]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quantized_flight ? formatStat(simulationData.error_stats.quantized_flight[row.rmse]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quantized_flight ? formatStat(simulationData.error_stats.quantized_flight[row.p95]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quantized_flight ? formatInt(simulationData.error_stats.quantized_flight[row.n]) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quantized_flight?.[row.field] ? formatStat(simulationData.error_stats.quantized_flight[row.field].mean) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quantized_flight?.[row.field] ? formatStat(simulationData.error_stats.quantized_flight[row.field].std) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quantized_flight?.[row.field] ? formatStat(simulationData.error_stats.quantized_flight[row.field].mae) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quantized_flight?.[row.field] ? formatStat(simulationData.error_stats.quantized_flight[row.field].rmse) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quantized_flight?.[row.field] ? formatStat(simulationData.error_stats.quantized_flight[row.field].p95) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quantized_flight?.[row.field] ? formatInt(simulationData.error_stats.quantized_flight[row.field].n) : '-'"></td>
                                      </tr>
                                  </template>
                                  
                                   <!-- Quant Roundtrip Stats -->
                                   <template x-for="row in [
-                                      { stage: 'True vs Quantized', qty: 'North Position (m)', mean: 'pos_n_mean', std: 'pos_n_std', mae: 'pos_n_mae', rmse: 'pos_n_rmse', p95: 'pos_n_p95', n: 'n' },
-                                      { stage: 'True vs Quantized', qty: 'East Position (m)', mean: 'pos_e_mean', std: 'pos_e_std', mae: 'pos_e_mae', rmse: 'pos_e_rmse', p95: 'pos_e_p95', n: 'n' },
-                                      { stage: 'True vs Quantized', qty: 'Altitude AGL (m)', mean: 'alt_mean', std: 'alt_std', mae: 'alt_mae', rmse: 'alt_rmse', p95: 'alt_p95', n: 'n' },
-                                      { stage: 'True vs Quantized', qty: 'North Velocity (m/s)', mean: 'vel_n_mean', std: 'vel_n_std', mae: 'vel_n_mae', rmse: 'vel_n_rmse', p95: 'vel_n_p95', n: 'n' },
-                                      { stage: 'True vs Quantized', qty: 'East Velocity (m/s)', mean: 'vel_e_mean', std: 'vel_e_std', mae: 'vel_e_mae', rmse: 'vel_e_rmse', p95: 'vel_e_p95', n: 'n' },
-                                      { stage: 'True vs Quantized', qty: 'Down Velocity (m/s)', mean: 'vel_d_mean', std: 'vel_d_std', mae: 'vel_d_mae', rmse: 'vel_d_rmse', p95: 'vel_d_p95', n: 'n' }
+                                      { stage: 'True vs Quantized', qty: 'North Position (m)', field: 'pos_n' },
+                                      { stage: 'True vs Quantized', qty: 'East Position (m)', field: 'pos_e' },
+                                      { stage: 'True vs Quantized', qty: 'Altitude AGL (m)', field: 'alt' },
+                                      { stage: 'True vs Quantized', qty: 'North Velocity (m/s)', field: 'vel_n' },
+                                      { stage: 'True vs Quantized', qty: 'East Velocity (m/s)', field: 'vel_e' },
+                                      { stage: 'True vs Quantized', qty: 'Down Velocity (m/s)', field: 'vel_d' }
                                   ]" :key="row.qty">
                                      <tr class="border-b border-stone-100">
                                           <td class="py-1 px-2 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                           <td class="py-1 px-2 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_roundtrip ? formatStat(simulationData.error_stats.quant_roundtrip[row.mean]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_roundtrip ? formatStat(simulationData.error_stats.quant_roundtrip[row.std]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_roundtrip ? formatStat(simulationData.error_stats.quant_roundtrip[row.mae]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_roundtrip ? formatStat(simulationData.error_stats.quant_roundtrip[row.rmse]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_roundtrip ? formatStat(simulationData.error_stats.quant_roundtrip[row.p95]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_roundtrip ? formatInt(simulationData.error_stats.quant_roundtrip[row.n]) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_roundtrip?.[row.field] ? formatStat(simulationData.error_stats.quant_roundtrip[row.field].mean) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_roundtrip?.[row.field] ? formatStat(simulationData.error_stats.quant_roundtrip[row.field].std) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_roundtrip?.[row.field] ? formatStat(simulationData.error_stats.quant_roundtrip[row.field].mae) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_roundtrip?.[row.field] ? formatStat(simulationData.error_stats.quant_roundtrip[row.field].rmse) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_roundtrip?.[row.field] ? formatStat(simulationData.error_stats.quant_roundtrip[row.field].p95) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_roundtrip?.[row.field] ? formatInt(simulationData.error_stats.quant_roundtrip[row.field].n) : '-'"></td>
                                      </tr>
                                  </template>
                                  
                                   <!-- Quant Recovery Stats -->
                                   <template x-for="row in [
-                                      { stage: 'Quant Recovery', qty: 'Latitude (°)', mean: 'lat_mean', std: 'lat_std', mae: 'lat_mae', rmse: 'lat_rmse', p95: 'lat_p95', n: 'n' },
-                                      { stage: 'Quant Recovery', qty: 'Longitude (°)', mean: 'lon_mean', std: 'lon_std', mae: 'lon_mae', rmse: 'lon_rmse', p95: 'lon_p95', n: 'n' },
-                                      { stage: 'Quant Recovery', qty: 'Altitude MSL (m)', mean: 'alt_mean', std: 'alt_std', mae: 'alt_mae', rmse: 'alt_rmse', p95: 'alt_p95', n: 'n' },
-                                      { stage: 'Quant Recovery', qty: 'Horizontal Position (m)', mean: 'horiz_mean', std: 'horiz_std', mae: 'horiz_mae', rmse: 'horiz_rmse', p95: 'horiz_p95', n: 'n' }
+                                      { stage: 'Quant Recovery', qty: 'Latitude (°)', field: 'lat' },
+                                      { stage: 'Quant Recovery', qty: 'Longitude (°)', field: 'lon' },
+                                      { stage: 'Quant Recovery', qty: 'Altitude MSL (m)', field: 'alt' },
+                                      { stage: 'Quant Recovery', qty: 'Horizontal Position (m)', field: 'horiz' }
                                   ]" :key="row.qty">
                                      <tr class="border-b border-stone-100">
                                           <td class="py-1 px-2 text-stone-800 whitespace-nowrap" x-text="row.stage"></td>
                                           <td class="py-1 px-2 text-stone-800 whitespace-nowrap" x-text="row.qty"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_recovery ? formatStat(simulationData.error_stats.quant_recovery[row.mean]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_recovery ? formatStat(simulationData.error_stats.quant_recovery[row.std]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_recovery ? formatStat(simulationData.error_stats.quant_recovery[row.mae]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_recovery ? formatStat(simulationData.error_stats.quant_recovery[row.rmse]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_recovery ? formatStat(simulationData.error_stats.quant_recovery[row.p95]) : '-'"></td>
-                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData && simulationData.error_stats && simulationData.error_stats.quant_recovery ? formatInt(simulationData.error_stats.quant_recovery[row.n]) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_recovery?.[row.field] ? formatStat(simulationData.error_stats.quant_recovery[row.field].mean) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_recovery?.[row.field] ? formatStat(simulationData.error_stats.quant_recovery[row.field].std) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_recovery?.[row.field] ? formatStat(simulationData.error_stats.quant_recovery[row.field].mae) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_recovery?.[row.field] ? formatStat(simulationData.error_stats.quant_recovery[row.field].rmse) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_recovery?.[row.field] ? formatStat(simulationData.error_stats.quant_recovery[row.field].p95) : '-'"></td>
+                                            <td class="py-1 px-2 text-right text-stone-600 font-mono text-[10px]" x-text="simulationData?.error_stats?.quant_recovery?.[row.field] ? formatInt(simulationData.error_stats.quant_recovery[row.field].n) : '-'"></td>
                                      </tr>
                                  </template>
                                  

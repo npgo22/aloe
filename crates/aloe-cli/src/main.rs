@@ -336,7 +336,7 @@ fn build_rocket_params(args: &Args) -> RocketParams {
 
 fn build_sensor_config(args: &Args) -> SensorConfig {
     // Map scalar "noise_scale" to individual sensor sigmas
-    SensorConfig {
+    let mut cfg = SensorConfig {
         noise_scale: args.noise_scale,
         accel_noise_std: 0.1,   // m/s^2
         gyro_noise_std: 0.002,  // rad/s
@@ -352,7 +352,23 @@ fn build_sensor_config(args: &Args) -> SensorConfig {
         mag_enabled: true,
         baro_enabled: true,
         gps_enabled: true,
+        accel_saturation: 200.0, // BMI088: ±200 m/s²
+        gyro_saturation: 34.9,   // BMI088: 2000 deg/s
+    };
+
+    // Apply sensor disable flags
+    for sensor in &args.disable_sensor {
+        match sensor.as_str() {
+            "accel" => cfg.accel_enabled = false,
+            "gyro" => cfg.gyro_enabled = false,
+            "mag" => cfg.mag_enabled = false,
+            "baro" => cfg.baro_enabled = false,
+            "gps" => cfg.gps_enabled = false,
+            _ => eprintln!("Warning: unknown sensor '{}' in --disable-sensor", sensor),
+        }
     }
+
+    cfg
 }
 
 fn print_sim_stats(result: &SimResult) {

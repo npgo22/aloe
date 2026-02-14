@@ -182,40 +182,38 @@ pub fn run_filter(
         // -------------------------------------------------------------------
         // PREDICT (IMU)
         // -------------------------------------------------------------------
-        let accel = sensor_data.accel_meas[i];
-        let gyro = sensor_data.gyro_meas[i];
+        // Map sensor readings to Option<f32> types
+        let accel_opt = sensor_data.accel_meas[i]
+            .map(|a| Vector3::new(a.x as f32, a.y as f32, a.z as f32));
+        let gyro_opt = sensor_data.gyro_meas[i]
+            .map(|g| Vector3::new(g.x as f32, g.y as f32, g.z as f32));
 
-        // Cast f64 sensor data to f32 for the filter
-        let accel_f32 = Vector3::new(accel.x as f32, accel.y as f32, accel.z as f32);
-        let gyro_f32 = Vector3::new(gyro.x as f32, gyro.y as f32, gyro.z as f32);
-
-        eskf.predict(Some(gyro_f32), Some(accel_f32), Some(accel_f32), t_us);
+        // Pass Option types to predict - filter will handle missing sensors
+        eskf.predict(gyro_opt, accel_opt, accel_opt, t_us);
 
         // -------------------------------------------------------------------
         // UPDATES (Mag, Baro, GPS)
         // -------------------------------------------------------------------
 
-        // Mag
-        let mag = sensor_data.mag_meas[i];
-        if mag.x.is_finite() {
+        // Mag - only update if sensor enabled
+        if let Some(mag) = sensor_data.mag_meas[i] {
             let mag_f32 = Vector3::new(mag.x as f32, mag.y as f32, mag.z as f32);
             eskf.update_mag(mag_f32);
         }
 
-        // Baro
-        let pressure = sensor_data.baro_pressure[i];
-        if pressure.is_finite() {
+        // Baro - only update if sensor enabled
+        if let Some(pressure) = sensor_data.baro_pressure[i] {
             eskf.update_baro(pressure as f32);
         }
 
-        // GPS
-        let gps_pos = sensor_data.gps_pos[i];
-        let gps_vel = sensor_data.gps_vel[i];
-        if gps_pos.x.is_finite() {
+        // GPS - only update if sensor enabled
+        if let (Some(gps_pos), Some(gps_vel)) =
+            (sensor_data.gps_pos[i], sensor_data.gps_vel[i])
+        {
             // Approx conversion: 1 deg lat ~ 111,111 m
             let lat = gps_pos.x / 111111.0;
             let lon = gps_pos.y / (111111.0 * 1.0_f64.cos());
-            let alt = -gps_pos.z; // GPS Altitude usually noisy
+            let alt = -gps_pos.z;
 
             let lat_deg = config.home_lat_deg + lat;
             let lon_deg = config.home_lon_deg + lon;

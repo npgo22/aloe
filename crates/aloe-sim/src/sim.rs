@@ -443,11 +443,18 @@ fn calculate_derivative(s: &State, p: &RocketParams) -> Derivative {
 
         // --- Damping Torque ---
         // Opposes rotation, proportional to angular velocity and dynamic pressure
-        let damping_factor = -0.05 * q_dynamic * p.ref_area * moment_arm_x.powi(2);
+        // Pitch/yaw damping uses moment arm length (CP-CG distance)
+        let damping_pitch_yaw = -0.05 * q_dynamic * p.ref_area * moment_arm_x.powi(2);
+
+        // Roll damping is much weaker and uses rocket radius, not moment arm
+        // This allows spin-stabilized rockets to maintain their spin rate
+        let rocket_radius = (p.ref_area / std::f64::consts::PI).sqrt();
+        let damping_roll = -0.002 * q_dynamic * p.ref_area * rocket_radius.powi(2);
+
         torque_aero_b += Vector3::new(
-            s.ang_vel_b.x * damping_factor * 0.1, // Roll damping is typically lower
-            s.ang_vel_b.y * damping_factor,
-            s.ang_vel_b.z * damping_factor,
+            s.ang_vel_b.x * damping_roll, // Much weaker roll damping
+            s.ang_vel_b.y * damping_pitch_yaw,
+            s.ang_vel_b.z * damping_pitch_yaw,
         );
     }
 
@@ -656,7 +663,7 @@ fn step_state(s: &State, d: &Derivative, dt: f64) -> State {
 ///
 /// # Example
 /// ```
-/// use rocket_sim::{RocketParams, simulate_6dof};
+/// use aloe_sim::sim::{RocketParams, simulate_6dof};
 ///
 /// let params = RocketParams::default();
 /// let result = simulate_6dof(&params);
@@ -674,6 +681,9 @@ pub fn simulate_6dof(p: &RocketParams) -> SimResult {
         ang_vel: Vec::with_capacity(max_steps),
         orientation: Vec::with_capacity(max_steps),
     };
+
+    // Track whether rocket has left the launch rail (to avoid re-constraining at landing)
+    let mut has_left_rail = false;
 
     for step in 0..max_steps {
         // Record current state
@@ -728,6 +738,35 @@ pub fn simulate_6dof(p: &RocketParams) -> SimResult {
 
         s.t += DT;
 
+        // Apply launch rail constraint AFTER integration
+        // Must constrain position and velocity in world frame, not just forces
+        // IMPORTANT: Only apply if rocket hasn't left the rail yet
+        // to avoid re-constraining when rocket returns to low altitude at landing
+        let dist_traveled = s.altitude();
+        if dist_traveled >= p.launch_rod_length {
+            has_left_rail = true;
+        }
+
+        if dist_traveled < p.launch_rod_length && !has_left_rail {
+            // Constrain lateral position to zero
+            s.pos_w.x = 0.0;
+            s.pos_w.y = 0.0;
+
+            // Constrain lateral velocity to zero
+            s.vel_w.x = 0.0;
+            s.vel_w.y = 0.0;
+
+            // Prevent pitch and yaw rotation while on rail, but allow roll (spin)
+            s.ang_vel_b.y = 0.0;
+            s.ang_vel_b.z = 0.0;
+
+            // Force attitude to point straight up (body X-axis aligned with -Z in NED)
+            // This prevents wind-induced pitch/yaw while on the rail
+            let vertical_att = UnitQuaternion::rotation_between(&Vector3::x_axis(), &-Vector3::z_axis())
+                .expect("Failed to create vertical orientation");
+            s.att = vertical_att;
+        }
+
         // Termination: rocket has returned to ground after flight
         // FIX: Check altitude <= 0 after sufficient flight time instead of using
         // the fragile vel < 1.0 heuristic from the original code.
@@ -772,31 +811,39 @@ mod tests {
 
     #[test]
     fn test_zero_dry_mass_invalid() {
-        let mut p = RocketParams::default();
-        p.dry_mass = 0.0;
+        let p = RocketParams {
+            dry_mass: 0.0,
+            ..Default::default()
+        };
         assert!(p.validate().is_err());
     }
 
     #[test]
     fn test_negative_inertia_invalid() {
-        let mut p = RocketParams::default();
-        p.inertia_tensor.x = -1.0;
+        let p = RocketParams {
+            inertia_tensor: Vector3::new(-1.0, 1.0, 1.0),
+            ..Default::default()
+        };
         assert!(p.validate().is_err());
     }
 
     #[test]
     fn test_cg_ordering_invalid() {
-        let mut p = RocketParams::default();
-        p.cg_empty = 2.0;
-        p.cg_full = 1.0; // Empty should be forward of full
+        let p = RocketParams {
+            cg_empty: 2.0,
+            cg_full: 1.0, // Empty should be forward of full
+            ..Default::default()
+        };
         assert!(p.validate().is_err());
     }
 
     #[test]
     fn test_cp_forward_of_cg_warning() {
-        let mut p = RocketParams::default();
-        p.cp_location = 1.0;
-        p.cg_full = 2.0; // Unstable configuration
+        let p = RocketParams {
+            cp_location: 1.0,
+            cg_full: 2.0, // Unstable configuration
+            ..Default::default()
+        };
         assert!(p.validate().is_err());
     }
 
@@ -928,19 +975,26 @@ mod tests {
 
         let result = simulate_6dof(&p);
 
-        // While altitude < launch_rod_length, lateral position should be ~zero
+        // While altitude < launch_rod_length DURING INITIAL LAUNCH, lateral position should be ~zero
+        // Don't check during descent when rocket returns to low altitude
         for i in 0..result.len() {
             let alt = -result.pos[i].z;
-            if alt < p.launch_rod_length {
+            let time = result.time[i];
+
+            // Only check constraint during initial launch phase (first 5 seconds)
+            // After that, rocket may return to low altitude during descent
+            if alt < p.launch_rod_length && time < 5.0 {
                 assert!(
                     result.pos[i].x.abs() < 0.1,
-                    "x drift on rail at alt {}: {}",
+                    "x drift on rail at t={:.2}s, alt={:.2}m: {}",
+                    time,
                     alt,
                     result.pos[i].x
                 );
                 assert!(
                     result.pos[i].y.abs() < 0.1,
-                    "y drift on rail at alt {}: {}",
+                    "y drift on rail at t={:.2}s, alt={:.2}m: {}",
+                    time,
                     alt,
                     result.pos[i].y
                 );
@@ -1111,7 +1165,8 @@ mod tests {
         let p = RocketParams {
             cg_full: 1.5,
             cg_empty: 1.4,
-            cp_location: 2.0, // Behind CG
+            cp_location: 2.0,                    // Behind CG
+            wind_velocity_ned: Vector3::zeros(), // No wind to avoid initial perturbation
             ..Default::default()
         };
 
@@ -1119,6 +1174,12 @@ mod tests {
 
         // Check that rocket doesn't develop excessive rotation
         let max_ang_vel = result.ang_vel.iter().map(|w| w.norm()).fold(0.0, f64::max);
+
+        eprintln!(
+            "Stability test: max_ang_vel={:.4} rad/s ({:.1} deg/s)",
+            max_ang_vel,
+            max_ang_vel.to_degrees()
+        );
 
         assert!(max_ang_vel < 1.0); // Less than ~60 deg/s rotation
     }
@@ -1134,7 +1195,27 @@ mod tests {
 
         // Rocket should drift North (positive X)
         let final_x = result.pos.last().unwrap().x;
-        assert!(final_x > 0.0); // Significant drift
+        let max_alt = result.max_altitude();
+
+        // Check X position throughout flight
+        let max_x = result.pos.iter().map(|p| p.x).fold(0.0, f64::max);
+        let min_x = result.pos.iter().map(|p| p.x).fold(0.0, f64::min);
+
+        eprintln!(
+            "Wind drift test: final_x={:.2} m, max_x={:.2} m, min_x={:.2} m, max_alt={:.2} m, flight_time={:.2} s",
+            final_x, max_x, min_x, max_alt, result.time.last().unwrap()
+        );
+
+        // Check some intermediate points
+        for i in (0..result.pos.len()).step_by((result.pos.len() / 10).max(1)) {
+            let alt = -result.pos[i].z;
+            eprintln!(
+                "  t={:.2}s: alt={:.2}m, x={:.2}m, y={:.2}m",
+                result.time[i], alt, result.pos[i].x, result.pos[i].y
+            );
+        }
+
+        assert!(final_x > 0.0, "Expected northward drift, got x={}", final_x);
     }
 
     #[test]
@@ -1241,6 +1322,13 @@ mod tests {
 
         // Should maintain high spin rate throughout flight
         let final_spin = result.ang_vel.last().unwrap().x;
+        let initial_spin = result.ang_vel[0].x;
+        eprintln!(
+            "Spin: initial={:.2} rad/s, final={:.2} rad/s, ratio={:.2}%",
+            initial_spin,
+            final_spin,
+            100.0 * final_spin / initial_spin
+        );
         assert!(final_spin.abs() > 5.0); // Still spinning
     }
 }

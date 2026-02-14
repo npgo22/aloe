@@ -8,7 +8,7 @@
 //! - **Altitude**: all internal altitudes are NED-Down, i.e. `pos.z = -alt_agl`.
 //!
 //! ## Error-state layout (15-element vector δx)
-//! ```
+//! ```text
 //!  [0..2]   δpos   (m)
 //!  [3..5]   δvel   (m/s)
 //!  [6..8]   δθ     (rad, rotation-vector error)

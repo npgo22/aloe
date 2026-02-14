@@ -4,6 +4,7 @@
 
 pub mod filter;
 pub mod params;
+pub mod presets;
 pub mod sensor;
 pub mod sim;
 

@@ -104,11 +104,16 @@ struct SimConfig {
     propellant_mass: f64,
     cg_full: f64,
     cg_empty: f64,
+    cp_location: f64,
+    inertia_x: f64,
+    inertia_y: f64,
+    inertia_z: f64,
     thrust: f64,
     burn_time: f64,
     drag_coeff: f64,
     ref_area: f64,
     launch_delay: f64,
+    launch_rod_length: f64,
     spin_rate: f64,
     thrust_cant: f64,
     // ENV params
@@ -137,11 +142,16 @@ impl Default for SimConfig {
             propellant_mass: 120.0,
             cg_full: 1.5,
             cg_empty: 1.4,
+            cp_location: 2.0,
+            inertia_x: 3.0,
+            inertia_y: 3.0,
+            inertia_z: 0.1,
             thrust: 18000.0,
             burn_time: 12.0,
             drag_coeff: 0.38,
             ref_area: 0.045,
             launch_delay: 1.0,
+            launch_rod_length: 3.0,
             spin_rate: 0.0,
             thrust_cant: 0.0,
             gravity: 9.81,
@@ -178,11 +188,16 @@ fn parse_config(params: &HashMap<String, String>) -> SimConfig {
     parse_param!(propellant_mass, "propellant_mass", f64);
     parse_param!(cg_full, "cg_full", f64);
     parse_param!(cg_empty, "cg_empty", f64);
+    parse_param!(cp_location, "cp_location", f64);
+    parse_param!(inertia_x, "inertia_x", f64);
+    parse_param!(inertia_y, "inertia_y", f64);
+    parse_param!(inertia_z, "inertia_z", f64);
     parse_param!(thrust, "thrust", f64);
     parse_param!(burn_time, "burn_time", f64);
     parse_param!(drag_coeff, "drag_coeff", f64);
     parse_param!(ref_area, "ref_area", f64);
     parse_param!(launch_delay, "launch_delay", f64);
+    parse_param!(launch_rod_length, "launch_rod_length", f64);
     parse_param!(spin_rate, "spin_rate", f64);
     parse_param!(thrust_cant, "thrust_cant", f64);
     parse_param!(gravity, "gravity", f64);
@@ -250,6 +265,9 @@ async fn handle_simulate(
                 sensor_data: GuiSensorData::empty(),
                 filter_data: FilterData::empty(),
                 error_stats: None,
+                apogee: 0.0,
+                max_velocity: 0.0,
+                flight_time: 0.0,
                 success: false,
                 error_message: Some(message),
             })
@@ -283,6 +301,10 @@ struct FullSimulationResponse {
     sensor_data: GuiSensorData,
     filter_data: FilterData,
     error_stats: Option<ErrorStats>,
+    // Key metrics
+    apogee: f64,         // Maximum altitude (m)
+    max_velocity: f64,   // Maximum velocity (m/s)
+    flight_time: f64,    // Total flight time (s)
     success: bool,
     /// Optional error message (populated when simulation fails)
     error_message: Option<String>,
@@ -430,13 +452,13 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
     let rocket_params = RocketParams {
         dry_mass: config.dry_mass,
         propellant_mass: config.propellant_mass,
-        inertia_tensor: Vector3::new(0.1, 10.0, 10.0), // Approximate
+        inertia_tensor: Vector3::new(config.inertia_x, config.inertia_y, config.inertia_z),
         cg_full: config.cg_full,
         cg_empty: config.cg_empty,
-        cp_location: 2.0,
+        cp_location: config.cp_location,
         ref_area: config.ref_area,
         drag_coeff_axial: config.drag_coeff,
-        normal_force_coeff: 12.0,
+        normal_force_coeff: 1.2,
         thrust_curve: vec![
             (0.0, config.thrust),
             (config.burn_time, config.thrust),
@@ -447,7 +469,7 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
         nozzle_location: 3.0,
         gravity: config.gravity,
         air_density_sea_level: config.air_density,
-        launch_rod_length: 2.0,
+        launch_rod_length: config.launch_rod_length,
         wind_velocity_ned: Vector3::new(config.wind_north, config.wind_east, 0.0),
         launch_delay: config.launch_delay,
         spin_rate: config.spin_rate,
@@ -496,13 +518,17 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
     if config.no_sensors {
         info!("Sensors DISABLED by config.");
 
-        // Log basic stats for debugging
-        let max_alt = altitude.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        // Calculate key metrics
+        let apogee = altitude.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_velocity = velocity.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let flight_time = *time.last().unwrap_or(&0.0);
+
         debug!(
-            "Simulation (no sensors): time steps {}, max alt {:.2}, final pos_z {:.2}",
+            "Simulation (no sensors): time steps {}, apogee {:.2}m, max_vel {:.2}m/s, flight_time {:.2}s",
             time.len(),
-            max_alt,
-            position_z.last().unwrap_or(&0.0)
+            apogee,
+            max_velocity,
+            flight_time
         );
 
         FullSimulationResponse {
@@ -520,6 +546,9 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             sensor_data: GuiSensorData::empty(),
             filter_data: FilterData::empty(),
             error_stats: None,
+            apogee,
+            max_velocity,
+            flight_time,
             success: true,
             error_message: None,
         }
@@ -541,31 +570,109 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             mag_enabled: config.lis3mdl_enabled,
             baro_enabled: config.ms5611_enabled,
             gps_enabled: config.gps_enabled,
+            accel_saturation: 200.0,
+            gyro_saturation: 34.9,
         };
         let sensor_data_sim = generate_sensor_data(&sim_result, &sensor_config);
         debug!("Sensor Data Steps: {}", sensor_data_sim.time.len());
 
         // Generate sensor data for GUI
         let gui_sensor_data = GuiSensorData {
-            accel_x: sensor_data_sim.accel_meas.iter().map(|v| v.x).collect(),
-            accel_y: sensor_data_sim.accel_meas.iter().map(|v| v.y).collect(),
-            accel_z: sensor_data_sim.accel_meas.iter().map(|v| v.z).collect(),
-            gyro_x: sensor_data_sim.gyro_meas.iter().map(|v| v.x).collect(),
-            gyro_y: sensor_data_sim.gyro_meas.iter().map(|v| v.y).collect(),
-            gyro_z: sensor_data_sim.gyro_meas.iter().map(|v| v.z).collect(),
-            baro_pressure: sensor_data_sim.baro_pressure.clone(),
-            mag_x: sensor_data_sim.mag_meas.iter().map(|v| v.x).collect(),
-            mag_y: sensor_data_sim.mag_meas.iter().map(|v| v.y).collect(),
-            mag_z: sensor_data_sim.mag_meas.iter().map(|v| v.z).collect(),
-            gps_x: sensor_data_sim.gps_pos.iter().map(|v| v.x).collect(),
-            gps_y: sensor_data_sim.gps_pos.iter().map(|v| v.y).collect(),
-            gps_z: sensor_data_sim.gps_pos.iter().map(|v| v.z).collect(),
-            gps_vel_x: sensor_data_sim.gps_vel.iter().map(|v| v.x).collect(),
-            gps_vel_y: sensor_data_sim.gps_vel.iter().map(|v| v.y).collect(),
-            gps_vel_z: sensor_data_sim.gps_vel.iter().map(|v| v.z).collect(),
-            adxl_x: sensor_data_sim.accel_meas.iter().map(|v| v.x).collect(),
-            adxl_y: sensor_data_sim.accel_meas.iter().map(|v| v.y).collect(),
-            adxl_z: sensor_data_sim.accel_meas.iter().map(|v| v.z).collect(),
+            accel_x: sensor_data_sim
+                .accel_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.x).unwrap_or(0.0))
+                .collect(),
+            accel_y: sensor_data_sim
+                .accel_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.y).unwrap_or(0.0))
+                .collect(),
+            accel_z: sensor_data_sim
+                .accel_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.z).unwrap_or(0.0))
+                .collect(),
+            gyro_x: sensor_data_sim
+                .gyro_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.x).unwrap_or(0.0))
+                .collect(),
+            gyro_y: sensor_data_sim
+                .gyro_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.y).unwrap_or(0.0))
+                .collect(),
+            gyro_z: sensor_data_sim
+                .gyro_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.z).unwrap_or(0.0))
+                .collect(),
+            baro_pressure: sensor_data_sim
+                .baro_pressure
+                .iter()
+                .map(|opt| opt.unwrap_or(101325.0))
+                .collect(),
+            mag_x: sensor_data_sim
+                .mag_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.x).unwrap_or(0.0))
+                .collect(),
+            mag_y: sensor_data_sim
+                .mag_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.y).unwrap_or(0.0))
+                .collect(),
+            mag_z: sensor_data_sim
+                .mag_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.z).unwrap_or(0.0))
+                .collect(),
+            gps_x: sensor_data_sim
+                .gps_pos
+                .iter()
+                .map(|opt| opt.map(|v| v.x).unwrap_or(0.0))
+                .collect(),
+            gps_y: sensor_data_sim
+                .gps_pos
+                .iter()
+                .map(|opt| opt.map(|v| v.y).unwrap_or(0.0))
+                .collect(),
+            gps_z: sensor_data_sim
+                .gps_pos
+                .iter()
+                .map(|opt| opt.map(|v| v.z).unwrap_or(0.0))
+                .collect(),
+            gps_vel_x: sensor_data_sim
+                .gps_vel
+                .iter()
+                .map(|opt| opt.map(|v| v.x).unwrap_or(0.0))
+                .collect(),
+            gps_vel_y: sensor_data_sim
+                .gps_vel
+                .iter()
+                .map(|opt| opt.map(|v| v.y).unwrap_or(0.0))
+                .collect(),
+            gps_vel_z: sensor_data_sim
+                .gps_vel
+                .iter()
+                .map(|opt| opt.map(|v| v.z).unwrap_or(0.0))
+                .collect(),
+            adxl_x: sensor_data_sim
+                .accel_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.x).unwrap_or(0.0))
+                .collect(),
+            adxl_y: sensor_data_sim
+                .accel_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.y).unwrap_or(0.0))
+                .collect(),
+            adxl_z: sensor_data_sim
+                .accel_meas
+                .iter()
+                .map(|opt| opt.map(|v| v.z).unwrap_or(0.0))
+                .collect(),
         };
 
         debug!("Running Filter...");
@@ -637,21 +744,22 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
 
         // Align ground truth to filter timestamps for accurate error stats
         let filter_time = &sensor_data_sim.time;
-        let true_pos_x: Vec<f64> = sim_result.pos.iter().map(|p| p.y).collect(); // east
-        let true_pos_y: Vec<f64> = sim_result.pos.iter().map(|p| p.x).collect(); // north
+        let true_pos_n: Vec<f64> = sim_result.pos.iter().map(|p| p.x).collect(); // north (NED x)
+        let true_pos_e: Vec<f64> = sim_result.pos.iter().map(|p| p.y).collect(); // east (NED y)
 
-        let aligned_true_pos_x = align_ground_truth(&sim_result.time, &true_pos_x, filter_time);
-        let aligned_true_pos_y = align_ground_truth(&sim_result.time, &true_pos_y, filter_time);
+        let aligned_true_pos_n = align_ground_truth(&sim_result.time, &true_pos_n, filter_time);
+        let aligned_true_pos_e = align_ground_truth(&sim_result.time, &true_pos_e, filter_time);
         let aligned_true_pos_z = align_ground_truth(&sim_result.time, &true_pos_z, filter_time);
         let aligned_true_vel_x = align_ground_truth(&sim_result.time, &true_vel_x, filter_time);
         let aligned_true_vel_y = align_ground_truth(&sim_result.time, &true_vel_y, filter_time);
         let aligned_true_vel_z = align_ground_truth(&sim_result.time, &true_vel_z, filter_time);
 
         // Calculate error statistics before downsampling
+        // PositionData.x = North, .y = East, .z = Down (consistent with NED frame)
         let error_stats = calculate_error_stats(
             PositionData {
-                x: &aligned_true_pos_x,
-                y: &aligned_true_pos_y,
+                x: &aligned_true_pos_n,
+                y: &aligned_true_pos_e,
                 z: &aligned_true_pos_z,
             },
             PositionData {
@@ -760,12 +868,16 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             )
         };
 
-        let max_alt = altitude.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        // Calculate key metrics
+        let apogee = altitude.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max_velocity = velocity.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let flight_time = *time.last().unwrap_or(&0.0);
+
         info!(
-            "Simulation (with sensors): time steps {}, max alt {:.2}, final pos_z {:.2}",
-            time.len(),
-            max_alt,
-            position_z.last().unwrap_or(&0.0)
+            "Simulation (with sensors): apogee {:.2}m, max_vel {:.2}m/s, flight_time {:.2}s",
+            apogee,
+            max_velocity,
+            flight_time
         );
 
         FullSimulationResponse {
@@ -789,6 +901,9 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
                 quant_recovery: error_stats.quant_recovery,
                 state_detection: error_stats.state_detection,
             }),
+            apogee,
+            max_velocity,
+            flight_time,
             success: true,
             error_message: None,
         }
@@ -817,9 +932,10 @@ fn calculate_error_stats(
     est_vel: VelocityData,
 ) -> ErrorStats {
     // Generate position errors for N, E, D components
+    // PositionData: .x = North, .y = East, .z = Down
     let n = true_pos.x.len();
-    let pos_n_errors: Vec<f64> = (0..n).map(|i| est_pos.y[i] - true_pos.y[i]).collect(); // north error
-    let pos_e_errors: Vec<f64> = (0..n).map(|i| est_pos.x[i] - true_pos.x[i]).collect(); // east error
+    let pos_n_errors: Vec<f64> = (0..n).map(|i| est_pos.x[i] - true_pos.x[i]).collect(); // north error
+    let pos_e_errors: Vec<f64> = (0..n).map(|i| est_pos.y[i] - true_pos.y[i]).collect(); // east error
     let pos_d_errors: Vec<f64> = (0..n).map(|i| est_pos.z[i] - true_pos.z[i]).collect(); // down error
 
     // 3D position errors
@@ -868,8 +984,8 @@ fn calculate_error_stats(
         calc_stats(&pos_3d_errors);
 
     // Quantized flight errors (ESKF vs quantized ESKF)
-    let quant_pos_n_errors: Vec<f64> = (0..n).map(|i| est_pos.y[i] - quantized_pos.y[i]).collect();
-    let quant_pos_e_errors: Vec<f64> = (0..n).map(|i| est_pos.x[i] - quantized_pos.x[i]).collect();
+    let quant_pos_n_errors: Vec<f64> = (0..n).map(|i| est_pos.x[i] - quantized_pos.x[i]).collect();
+    let quant_pos_e_errors: Vec<f64> = (0..n).map(|i| est_pos.y[i] - quantized_pos.y[i]).collect();
     let quant_alt_errors: Vec<f64> = (0..n)
         .map(|i| (-est_pos.z[i]) - (-quantized_pos.z[i]))
         .collect();
@@ -951,9 +1067,9 @@ fn calculate_error_stats(
 
     // Quant roundtrip errors (true vs quantized)
     let quant_roundtrip_pos_n_errors: Vec<f64> =
-        (0..n).map(|i| quantized_pos.y[i] - true_pos.y[i]).collect();
-    let quant_roundtrip_pos_e_errors: Vec<f64> =
         (0..n).map(|i| quantized_pos.x[i] - true_pos.x[i]).collect();
+    let quant_roundtrip_pos_e_errors: Vec<f64> =
+        (0..n).map(|i| quantized_pos.y[i] - true_pos.y[i]).collect();
     let quant_roundtrip_alt_errors: Vec<f64> = (0..n)
         .map(|i| (-quantized_pos.z[i]) - (-true_pos.z[i]))
         .collect(); // altitude error
@@ -1236,8 +1352,36 @@ fn calculate_error_stats(
     }
 }
 
-fn downsample_vec<T: Clone>(vec: &[T], step: usize) -> Vec<T> {
-    vec.iter().step_by(step).cloned().collect()
+/// Downsample with anti-aliasing using a moving average filter
+/// This prevents resonance/aliasing artifacts in the downsampled data
+fn downsample_vec<T>(vec: &[T], step: usize) -> Vec<T>
+where
+    T: Clone + std::ops::Add<Output = T> + std::ops::Div<f64, Output = T> + Default,
+{
+    if step <= 1 {
+        return vec.to_vec();
+    }
+
+    let target_points = vec.len().div_ceil(step);
+    let mut result = Vec::with_capacity(target_points);
+
+    // Use moving average as anti-aliasing filter
+    // Window size is the decimation factor
+    for i in 0..target_points {
+        let center_idx = i * step;
+        let start = center_idx.saturating_sub(step / 2);
+        let end = (center_idx + step / 2).min(vec.len());
+
+        // Compute average over window
+        let mut sum = T::default();
+        for item in vec.iter().take(end).skip(start) {
+            sum = sum + item.clone();
+        }
+        let count = (end - start) as f64;
+        result.push(sum / count);
+    }
+
+    result
 }
 
 fn generate_state_changes(
