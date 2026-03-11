@@ -7,17 +7,19 @@
 //! - Sensor data visualization
 //! - Filter error statistics
 
+pub mod tracing_init;
+
 use aloe_sim::{
     filter::{run_filter, FilterConfig},
-    sensor::{generate_sensor_data, SensorConfig},
+    sensor::{generate_sensor_data, ChaosConfig, SensorConfig},
     sim::{simulate_6dof, RocketParams},
 };
 use axum::{extract::Query, routing::get, Json, Router};
-use log::{debug, error, info, warn};
 use nalgebra::Vector3;
 use serde::Serialize;
 use std::collections::HashMap;
 use tower_http::services::ServeDir;
+use tracing::{debug, error, info, instrument, warn};
 
 #[derive(Serialize, Clone)]
 struct SimpleErrorStats {
@@ -223,6 +225,7 @@ fn parse_config(params: &HashMap<String, String>) -> SimConfig {
 }
 
 /// Handle simulation request
+#[instrument(skip(params), fields(preset = params.get("preset").map(|s| s.as_str())))]
 async fn handle_simulate(
     Query(params): Query<HashMap<String, String>>,
 ) -> Json<FullSimulationResponse> {
@@ -260,11 +263,20 @@ async fn handle_simulate(
                 position_x: vec![],
                 position_y: vec![],
                 position_z: vec![],
+                velocity_x: vec![],
+                velocity_y: vec![],
+                velocity_z: vec![],
                 state_changes_sim: vec![],
                 state_changes_eskf: vec![],
                 sensor_data: GuiSensorData::empty(),
                 filter_data: FilterData::empty(),
                 error_stats: None,
+                true_accel_x: vec![],
+                true_accel_y: vec![],
+                true_accel_z: vec![],
+                true_gyro_x: vec![],
+                true_gyro_y: vec![],
+                true_gyro_z: vec![],
                 apogee: 0.0,
                 max_velocity: 0.0,
                 flight_time: 0.0,
@@ -296,15 +308,25 @@ struct FullSimulationResponse {
     position_x: Vec<f64>,
     position_y: Vec<f64>,
     position_z: Vec<f64>,
+    velocity_x: Vec<f64>, // NED north velocity (m/s)
+    velocity_y: Vec<f64>, // NED east velocity (m/s)
+    velocity_z: Vec<f64>, // NED down velocity (m/s)
     state_changes_sim: Vec<StateChange>,
     state_changes_eskf: Vec<StateChange>,
     sensor_data: GuiSensorData,
     filter_data: FilterData,
     error_stats: Option<ErrorStats>,
+    // True sensor values (perfect, no noise)
+    true_accel_x: Vec<f64>,
+    true_accel_y: Vec<f64>,
+    true_accel_z: Vec<f64>,
+    true_gyro_x: Vec<f64>,
+    true_gyro_y: Vec<f64>,
+    true_gyro_z: Vec<f64>,
     // Key metrics
-    apogee: f64,         // Maximum altitude (m)
-    max_velocity: f64,   // Maximum velocity (m/s)
-    flight_time: f64,    // Total flight time (s)
+    apogee: f64,       // Maximum altitude (m)
+    max_velocity: f64, // Maximum velocity (m/s)
+    flight_time: f64,  // Total flight time (s)
     success: bool,
     /// Optional error message (populated when simulation fails)
     error_message: Option<String>,
@@ -379,6 +401,9 @@ struct FilterData {
     quantized_est_pos_x: Vec<f64>,
     quantized_est_pos_y: Vec<f64>,
     quantized_est_pos_z: Vec<f64>,
+    quantized_est_vel_x: Vec<f64>,
+    quantized_est_vel_y: Vec<f64>,
+    quantized_est_vel_z: Vec<f64>,
 }
 
 impl FilterData {
@@ -394,6 +419,9 @@ impl FilterData {
             quantized_est_pos_x: vec![],
             quantized_est_pos_y: vec![],
             quantized_est_pos_z: vec![],
+            quantized_est_vel_x: vec![],
+            quantized_est_vel_y: vec![],
+            quantized_est_vel_z: vec![],
         }
     }
 }
@@ -447,6 +475,11 @@ fn align_ground_truth(sim_time: &[f64], sim_data: &[f64], filter_time: &[f64]) -
 }
 
 /// Run full 6-DOF simulation
+#[instrument(skip(config), fields(
+    dry_mass = config.dry_mass,
+    thrust = config.thrust,
+    burn_time = config.burn_time
+))]
 fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
     info!("Starting run_full_simulation");
     let rocket_params = RocketParams {
@@ -512,6 +545,19 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
     let position_y: Vec<f64> = sim_result.pos.iter().map(|p| p.y).collect();
     let position_z: Vec<f64> = sim_result.pos.iter().map(|p| -p.z).collect(); // NED to altitude
 
+    // Extract velocity components (NED frame)
+    let velocity_x: Vec<f64> = sim_result.vel.iter().map(|v| v.x).collect(); // North
+    let velocity_y: Vec<f64> = sim_result.vel.iter().map(|v| v.y).collect(); // East
+    let velocity_z: Vec<f64> = sim_result.vel.iter().map(|v| v.z).collect(); // Down
+
+    // Extract true sensor values (perfect, no noise)
+    let true_accel_x: Vec<f64> = sim_result.accel_body.iter().map(|a| a.x).collect();
+    let true_accel_y: Vec<f64> = sim_result.accel_body.iter().map(|a| a.y).collect();
+    let true_accel_z: Vec<f64> = sim_result.accel_body.iter().map(|a| a.z).collect();
+    let true_gyro_x: Vec<f64> = sim_result.ang_vel.iter().map(|g| g.x).collect();
+    let true_gyro_y: Vec<f64> = sim_result.ang_vel.iter().map(|g| g.y).collect();
+    let true_gyro_z: Vec<f64> = sim_result.ang_vel.iter().map(|g| g.z).collect();
+
     // Generate state changes for sim
     let state_changes_sim = generate_state_changes(&time, &sim_result.pos, &sim_result.vel);
 
@@ -541,11 +587,20 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             position_x,
             position_y,
             position_z,
+            velocity_x: velocity_x.clone(),
+            velocity_y: velocity_y.clone(),
+            velocity_z: velocity_z.clone(),
             state_changes_sim,
             state_changes_eskf: vec![],
             sensor_data: GuiSensorData::empty(),
             filter_data: FilterData::empty(),
             error_stats: None,
+            true_accel_x: true_accel_x.clone(),
+            true_accel_y: true_accel_y.clone(),
+            true_accel_z: true_accel_z.clone(),
+            true_gyro_x: true_gyro_x.clone(),
+            true_gyro_y: true_gyro_y.clone(),
+            true_gyro_z: true_gyro_z.clone(),
             apogee,
             max_velocity,
             flight_time,
@@ -572,6 +627,7 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             gps_enabled: config.gps_enabled,
             accel_saturation: 200.0,
             gyro_saturation: 34.9,
+            chaos: ChaosConfig::default(),
         };
         let sensor_data_sim = generate_sensor_data(&sim_result, &sensor_config);
         debug!("Sensor Data Steps: {}", sensor_data_sim.time.len());
@@ -691,6 +747,9 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             quantized_est_pos_x: vec![],
             quantized_est_pos_y: vec![],
             quantized_est_pos_z: vec![],
+            quantized_est_vel_x: vec![],
+            quantized_est_vel_y: vec![],
+            quantized_est_vel_z: vec![],
         };
 
         let est_vel_mag: Vec<f64> = filter_data_temp
@@ -718,6 +777,23 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             .map(|&z| ((-z * 100.0) as i32 as f64) / 100.0)
             .collect();
 
+        // Compute quantized velocities (stored as i16 in dm/s, per FlightData in quantize.rs)
+        let quantized_est_vel_x: Vec<f64> = filter_data_temp
+            .est_vel_x
+            .iter()
+            .map(|&vx| ((vx * 10.0) as i16 as f64) / 10.0)
+            .collect();
+        let quantized_est_vel_y: Vec<f64> = filter_data_temp
+            .est_vel_y
+            .iter()
+            .map(|&vy| ((vy * 10.0) as i16 as f64) / 10.0)
+            .collect();
+        let quantized_est_vel_z: Vec<f64> = filter_data_temp
+            .est_vel_z
+            .iter()
+            .map(|&vz| ((vz * 10.0) as i16 as f64) / 10.0)
+            .collect();
+
         let filter_data = FilterData {
             est_pos_x: filter_data_temp.est_pos_x,
             est_pos_y: filter_data_temp.est_pos_y,
@@ -729,6 +805,9 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             quantized_est_pos_x,
             quantized_est_pos_y,
             quantized_est_pos_z,
+            quantized_est_vel_x,
+            quantized_est_vel_y,
+            quantized_est_vel_z,
         };
 
         // Generate state changes for ESKF
@@ -782,6 +861,20 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
                 y: &filter_data.est_vel_y,
                 z: &filter_data.est_vel_z,
             },
+            VelocityData {
+                x: &filter_data.quantized_est_vel_x,
+                y: &filter_data.quantized_est_vel_y,
+                z: &filter_data.quantized_est_vel_z,
+            },
+            sim_result.ascent_time,
+            sim_result.coast_time,
+            sim_result.descent_time,
+            filter_result.ascent_time,
+            filter_result.coast_time,
+            filter_result.descent_time,
+            filter_config.home_lat_deg,
+            filter_config.home_lon_deg,
+            filter_config.home_alt_m,
         );
 
         debug!("=== BEFORE DOWNSAMPLING ===");
@@ -850,6 +943,9 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
                     quantized_est_pos_x: downsample_vec(&filter_data.quantized_est_pos_x, step),
                     quantized_est_pos_y: downsample_vec(&filter_data.quantized_est_pos_y, step),
                     quantized_est_pos_z: downsample_vec(&filter_data.quantized_est_pos_z, step),
+                    quantized_est_vel_x: downsample_vec(&filter_data.quantized_est_vel_x, step),
+                    quantized_est_vel_y: downsample_vec(&filter_data.quantized_est_vel_y, step),
+                    quantized_est_vel_z: downsample_vec(&filter_data.quantized_est_vel_z, step),
                 },
             )
         } else {
@@ -875,9 +971,7 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
 
         info!(
             "Simulation (with sensors): apogee {:.2}m, max_vel {:.2}m/s, flight_time {:.2}s",
-            apogee,
-            max_velocity,
-            flight_time
+            apogee, max_velocity, flight_time
         );
 
         FullSimulationResponse {
@@ -890,6 +984,9 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             position_x,
             position_y,
             position_z,
+            velocity_x,
+            velocity_y,
+            velocity_z,
             state_changes_sim,
             state_changes_eskf,
             sensor_data,
@@ -901,6 +998,12 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
                 quant_recovery: error_stats.quant_recovery,
                 state_detection: error_stats.state_detection,
             }),
+            true_accel_x,
+            true_accel_y,
+            true_accel_z,
+            true_gyro_x,
+            true_gyro_y,
+            true_gyro_z,
             apogee,
             max_velocity,
             flight_time,
@@ -924,12 +1027,23 @@ struct VelocityData<'a> {
     z: &'a [f64],
 }
 
+#[allow(clippy::too_many_arguments)]
 fn calculate_error_stats(
     true_pos: PositionData,
     est_pos: PositionData,
     quantized_pos: PositionData,
     true_vel: VelocityData,
     est_vel: VelocityData,
+    quantized_vel: VelocityData,
+    sim_ascent_time: Option<f64>,
+    sim_coast_time: Option<f64>,
+    sim_descent_time: Option<f64>,
+    filter_ascent_time: Option<f64>,
+    filter_coast_time: Option<f64>,
+    filter_descent_time: Option<f64>,
+    home_lat_deg: f64,
+    home_lon_deg: f64,
+    home_alt_m: f64,
 ) -> ErrorStats {
     // Generate position errors for N, E, D components
     // PositionData: .x = North, .y = East, .z = Down
@@ -997,9 +1111,9 @@ fn calculate_error_stats(
             (dn * dn + de * de + dalt * dalt).sqrt()
         })
         .collect();
-    let quant_vel_n_errors: Vec<f64> = vec![0.0; n]; // Not quantized
-    let quant_vel_e_errors: Vec<f64> = vec![0.0; n];
-    let quant_vel_d_errors: Vec<f64> = vec![0.0; n];
+    let quant_vel_n_errors: Vec<f64> = (0..n).map(|i| est_vel.x[i] - quantized_vel.x[i]).collect();
+    let quant_vel_e_errors: Vec<f64> = (0..n).map(|i| est_vel.y[i] - quantized_vel.y[i]).collect();
+    let quant_vel_d_errors: Vec<f64> = (0..n).map(|i| est_vel.z[i] - quantized_vel.z[i]).collect();
 
     let (
         quant_pos_n_min,
@@ -1081,9 +1195,12 @@ fn calculate_error_stats(
             (dn * dn + de * de + dalt * dalt).sqrt()
         })
         .collect();
-    let quant_roundtrip_vel_n_errors: Vec<f64> = vec![0.0; n]; // Not quantized
-    let quant_roundtrip_vel_e_errors: Vec<f64> = vec![0.0; n];
-    let quant_roundtrip_vel_d_errors: Vec<f64> = vec![0.0; n];
+    let quant_roundtrip_vel_n_errors: Vec<f64> =
+        (0..n).map(|i| quantized_vel.x[i] - true_vel.x[i]).collect();
+    let quant_roundtrip_vel_e_errors: Vec<f64> =
+        (0..n).map(|i| quantized_vel.y[i] - true_vel.y[i]).collect();
+    let quant_roundtrip_vel_d_errors: Vec<f64> =
+        (0..n).map(|i| quantized_vel.z[i] - true_vel.z[i]).collect();
 
     let (
         quant_roundtrip_pos_n_min,
@@ -1347,8 +1464,121 @@ fn calculate_error_stats(
                 n,
             },
         }),
-        quant_recovery: None,
-        state_detection: None,
+        quant_recovery: {
+            // Calculate recovery position errors (final landing position)
+            // Use last position in arrays (landing position)
+            let n = true_pos.x.len();
+            if n == 0 {
+                None
+            } else {
+                let final_idx = n - 1;
+
+                // Final true position in NED
+                let true_north_m = true_pos.x[final_idx];
+                let true_east_m = true_pos.y[final_idx];
+                let true_down_m = true_pos.z[final_idx];
+
+                // Final quantized position in NED
+                let quant_north_m = quantized_pos.x[final_idx];
+                let quant_east_m = quantized_pos.y[final_idx];
+                let quant_down_m = quantized_pos.z[final_idx];
+
+                // Convert NED to geographic coordinates
+                // Approximation: 1 deg latitude ≈ 111,111 m
+                // 1 deg longitude ≈ 111,111 m * cos(lat)
+                const M_PER_DEG_LAT: f64 = 111_111.0;
+                let m_per_deg_lon = M_PER_DEG_LAT * home_lat_deg.to_radians().cos();
+
+                // True final position in geographic
+                let true_lat = home_lat_deg + true_north_m / M_PER_DEG_LAT;
+                let true_lon = home_lon_deg + true_east_m / m_per_deg_lon;
+                let true_alt_msl = home_alt_m + (-true_down_m); // NED down is negative up
+
+                // Quantized final position in geographic
+                let quant_lat = home_lat_deg + quant_north_m / M_PER_DEG_LAT;
+                let quant_lon = home_lon_deg + quant_east_m / m_per_deg_lon;
+                let quant_alt_msl = home_alt_m + (-quant_down_m);
+
+                // Calculate errors (quantized - true)
+                let lat_error_deg = quant_lat - true_lat;
+                let lon_error_deg = quant_lon - true_lon;
+                let alt_error_m = quant_alt_msl - true_alt_msl;
+                let horiz_error_m = ((quant_north_m - true_north_m).powi(2)
+                    + (quant_east_m - true_east_m).powi(2))
+                .sqrt();
+
+                // Create stats for single measurement
+                let make_single_stat = |val: f64| SimpleErrorStats {
+                    min: val,
+                    max: val,
+                    mean: val,
+                    std: 0.0,
+                    rmse: val.abs(),
+                    mae: val.abs(),
+                    p95: val,
+                    n: 1,
+                };
+
+                Some(QuantRecoveryErrorStats {
+                    lat: make_single_stat(lat_error_deg),
+                    lon: make_single_stat(lon_error_deg),
+                    alt: make_single_stat(alt_error_m),
+                    horiz: make_single_stat(horiz_error_m),
+                })
+            }
+        },
+        state_detection: {
+            // Calculate state detection time delays (ESKF - Simulation)
+            // Positive delay means ESKF detected later than simulation
+            // Negative delay means ESKF detected earlier than simulation
+
+            let burn_delay = match (filter_ascent_time, sim_ascent_time) {
+                (Some(f), Some(s)) => Some(f - s),
+                _ => None,
+            };
+
+            let coast_delay = match (filter_coast_time, sim_coast_time) {
+                (Some(f), Some(s)) => Some(f - s),
+                _ => None,
+            };
+
+            let rec_delay = match (filter_descent_time, sim_descent_time) {
+                (Some(f), Some(s)) => Some(f - s),
+                _ => None,
+            };
+
+            // Helper to create SimpleErrorStats for a single delay value
+            let stats_from_delay = |delay: Option<f64>| -> SimpleErrorStats {
+                match delay {
+                    Some(d) => SimpleErrorStats {
+                        min: d,
+                        max: d,
+                        mean: d,
+                        std: 0.0,
+                        rmse: d.abs(),
+                        mae: d.abs(),
+                        p95: d,
+                        n: 1,
+                    },
+                    None => SimpleErrorStats {
+                        min: 0.0,
+                        max: 0.0,
+                        mean: 0.0,
+                        std: 0.0,
+                        rmse: 0.0,
+                        mae: 0.0,
+                        p95: 0.0,
+                        n: 0,
+                    },
+                }
+            };
+
+            Some(StateDetectionErrorStats {
+                burn: stats_from_delay(burn_delay),
+                coast: stats_from_delay(coast_delay),
+                rec: stats_from_delay(rec_delay),
+            })
+        },
     }
 }
 
@@ -1395,11 +1625,24 @@ fn generate_state_changes(
         description: "On Pad".to_string(),
     }];
     let mut last_state = "Pad";
-    for i in 0..time.len() {
+    let mut apogee_detected = false;
+
+    for i in 1..time.len() {
         let t = time[i];
         let vel_mag = vel[i].norm();
         let alt = -pos[i].z;
         let on_ground = alt < 0.1 && vel_mag < 1.0;
+
+        // Detect apogee: transition from upward to downward vertical velocity
+        // In NED: vel.z < 0 is upward, vel.z > 0 is downward
+        if !apogee_detected && i > 0 && vel[i - 1].z < 0.0 && vel[i].z >= 0.0 && alt > 10.0 {
+            state_changes.push(StateChange {
+                time: t,
+                state: "Apogee".to_string(),
+                description: format!("Apogee at {:.1}m", alt),
+            });
+            apogee_detected = true;
+        }
 
         let state = if t < 1.0 {
             "Pad"

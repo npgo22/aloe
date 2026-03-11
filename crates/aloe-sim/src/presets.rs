@@ -81,7 +81,7 @@ pub fn high_drag_test() -> RocketParams {
         thrust_curve: vec![(0.0, 200.0), (2.0, 200.0), (2.01, 0.0)],
         burn_time: 2.0,
         isp: 180.0,
-        ref_area: 0.02, // Large frontal area
+        ref_area: 0.02,        // Large frontal area
         drag_coeff_axial: 2.0, // Very high drag
         cg_full: 0.8,
         cg_empty: 0.75,

@@ -1,6 +1,6 @@
 use aloe_sim::{
-    generate_sensor_data, run_filter, simulate_6dof, FilterConfig, FilterResult, RocketParams,
-    SensorConfig, SensorData, SimResult,
+    generate_sensor_data, run_filter, simulate_6dof, ChaosConfig, FilterConfig, FilterResult,
+    RocketParams, SensorConfig, SensorData, SimResult,
 };
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
@@ -19,150 +19,193 @@ pub fn run_cli_main(args: &[&str]) -> Result<()> {
 #[command(about = "Hobby-rocket 6-DoF flight simulator")]
 #[command(version)]
 pub struct Args {
-    /// Output directory
+    /// Output directory for simulation results (CSV/JSON files)
     #[arg(short, long, default_value = "output")]
     output_dir: PathBuf,
 
-    /// Output file format
+    /// Output file format (csv or json)
     #[arg(short, long, value_enum, default_value = "csv")]
     format: OutputFormat,
 
-    /// Run a single simulation
+    /// Run a single simulation instead of parameter sweep
     #[arg(long)]
     single: bool,
 
     // ── Simulation parameters ─────────────────────────────────
+    /// Rocket dry mass without propellant (kg). Typical model rockets: 0.1-5 kg, high-power: 5-50 kg
     #[arg(long, default_value_t = 20.0)]
     dry_mass: f64,
 
+    /// Total propellant mass at launch (kg). Affects burn rate and delta-v
     #[arg(long, default_value_t = 10.0)]
     propellant_mass: f64,
 
+    /// Motor thrust force (N). Example: Estes E9 = 25N, Cesaroni Pro98 = 1500N
     #[arg(long, default_value_t = 2000.0)]
     thrust: f64,
 
+    /// Motor burn time (s). Longer burn = lower acceleration, higher efficiency
     #[arg(long, default_value_t = 5.0)]
     burn_time: f64,
 
+    /// Coefficient of drag (dimensionless). Typical values: 0.3-0.5 for streamlined, 0.5-0.75 for stable
     #[arg(long, default_value_t = 0.5)]
     drag_coeff: f64,
 
+    /// Reference area for drag calculation (m²). Usually cross-sectional area: π*(diameter/2)²
     #[arg(long, default_value_t = 0.018)]
     ref_area: f64,
 
+    /// Gravitational acceleration (m/s²). Earth = 9.81, varies slightly with latitude/altitude
     #[arg(long, default_value_t = 9.81)]
     gravity: f64,
 
+    /// Wind speed in north direction (m/s). Positive = northward, affects drift
     #[arg(long, default_value_t = 5.0)]
-    wind_speed: f64, // North
+    wind_speed: f64,
 
+    /// Wind speed in east direction (m/s). Positive = eastward, affects drift
     #[arg(long, default_value_t = 0.0)]
-    wind_speed_z: f64, // East
+    wind_speed_z: f64,
 
+    /// Air density at launch site (kg/m³). Sea level = 1.225, decreases with altitude
     #[arg(long, default_value_t = 1.225)]
     air_density: f64,
 
+    /// Delay before motor ignition (s). Used to simulate hold on pad
     #[arg(long, default_value_t = 1.0)]
     launch_delay: f64,
 
+    /// Initial spin rate around body axis (rad/s). Used for spin-stabilized rockets
     #[arg(long, default_value_t = 0.0)]
     spin_rate: f64,
 
+    /// Thrust misalignment angle (rad). Simulates canted nozzle or manufacturing defects
     #[arg(long, default_value_t = 0.0)]
     thrust_cant: f64,
 
     // ── Sensor options ────────────────────────────────────────
+    /// Disable all sensor noise (perfect measurements). Use for debugging or ideal trajectory analysis
     #[arg(long)]
     no_sensors: bool,
 
+    /// Random number generator seed for sensor noise. Same seed = reproducible results
     #[arg(long, default_value_t = 42)]
     seed: u64,
 
+    /// Sensor noise scaling factor (multiplier). 0.5 = half noise, 2.0 = double noise
     #[arg(long, default_value_t = 1.0)]
     noise_scale: f64,
 
     // ── Filter options ────────────────────────────────────────
+    /// Disable ESKF state estimation. Simulation only, no filtering
     #[arg(long)]
     no_filter: bool,
 
+    /// [DEPRECATED] Use --accel-noise-density-tune instead
     #[arg(long, default_value_t = 0.5)]
-    accel_noise_density: f32, // Tuning param for filter
+    accel_noise_density: f32,
 
     // ── Sweep options ──────────────────────────────────────────
+    /// Space-separated list of parameters to sweep. Example: --sweep-params "thrust drag_coeff"
     #[arg(long, value_delimiter = ' ')]
     sweep_params: Option<Vec<String>>,
 
+    /// Number of steps for each swept parameter. Total runs = steps^(num_params)
     #[arg(long, default_value_t = 5)]
     sweep_steps: usize,
 
+    /// Disable specific sensors for failure mode testing. Example: --disable-sensor "gps baro"
     #[arg(long, value_delimiter = ' ')]
     disable_sensor: Vec<String>,
 
+    /// Generate detailed filter performance report with error statistics
     #[arg(long)]
     filter_report: bool,
 
     // ── ESKF tuning parameters ──────────────────────────────────
+    /// Accelerometer noise density (m/s²/√Hz). Controls Q matrix diagonal for accel. Higher = trust accel less
     #[arg(long, default_value_t = 0.2236)]
     accel_noise_density_tune: f32,
 
+    /// Gyroscope noise density (rad/s/√Hz). Controls Q matrix diagonal for gyro. Higher = trust gyro less
     #[arg(long, default_value_t = 0.03728)]
     gyro_noise_density: f32,
 
+    /// Accelerometer bias random walk (m/s²). Models slow drift in accel bias over time
     #[arg(long, default_value_t = 0.01)]
     accel_bias_instability: f32,
 
+    /// Gyroscope bias random walk (rad/s). Models slow drift in gyro bias over time
     #[arg(long, default_value_t = 3.728e-5)]
     gyro_bias_instability: f32,
 
+    /// Position process noise variance (m²). Models uncertainty in position dynamics
     #[arg(long, default_value_t = 1.0)]
     pos_process_noise: f32,
 
+    /// GPS position measurement noise variance (m²). R matrix for GPS position updates
     #[arg(long, default_value_t = 61.05)]
     r_gps_pos: f32,
 
+    /// GPS velocity measurement noise variance ((m/s)²). R matrix for GPS velocity updates
     #[arg(long, default_value_t = 0.07197)]
     r_gps_vel: f32,
 
+    /// Barometer measurement noise variance (m²). R matrix for baro altitude updates
     #[arg(long, default_value_t = 0.1)]
     r_baro: f32,
 
+    /// Magnetometer measurement noise variance (rad²). R matrix for mag heading updates
     #[arg(long, default_value_t = 1.0)]
     r_mag: f32,
 
     // ── Tune-sweep mode ───────────────────────────────────
+    /// Enable filter tuning mode with greedy coordinate descent optimization
     #[arg(long)]
     tune_sweep: bool,
 
+    /// Tuning algorithm: "greedy" (coordinate descent) or "grid" (exhaustive search)
     #[arg(long, default_value = "greedy")]
     tune_mode: String,
 
+    /// Number of steps per tuning parameter. More steps = finer resolution, longer runtime
     #[arg(long, default_value_t = 15)]
     tune_steps: usize,
 
+    /// Space-separated ESKF parameters to tune. Example: --tune-params "r_gps_pos r_baro"
     #[arg(long, value_delimiter = ' ')]
     tune_params: Option<Vec<String>>,
 
+    /// Space-separated flight stages to tune. Example: --tune-stages "Ascent Coast"
     #[arg(long, value_delimiter = ' ')]
     tune_stages: Option<Vec<String>>,
 
+    /// Test filter robustness with systematic sensor failures (GPS dropout, baro noise spike)
     #[arg(long)]
     sensor_failure_test: bool,
 
+    /// Space-separated sensor noise scale factors for Monte Carlo. Example: --tune-noise-scales "0.5 1.0 2.0"
     #[arg(long, value_delimiter = ' ', default_values = ["1.0"])]
     tune_noise_scales: Vec<f64>,
 
+    /// Space-separated RNG seeds for Monte Carlo analysis. Example: --tune-seeds "42 43 44"
     #[arg(long, value_delimiter = ' ', default_values = ["42"])]
     tune_seeds: Vec<u64>,
 
+    /// Magnetic declination at launch site (degrees). Angle between true north and magnetic north
     #[arg(long, default_value_t = 0.0)]
     mag_declination: f32,
 
+    /// Launch site latitude (degrees). Used for geographic coordinate conversion
     #[arg(long, default_value_t = 35.0)]
     home_lat: f32,
 
+    /// Launch site longitude (degrees). Used for geographic coordinate conversion
     #[arg(long, default_value_t = -106.0)]
     home_lon: f32,
 
+    /// Launch site altitude MSL (m). Used as reference for NED coordinate conversions
     #[arg(long, default_value_t = 1500.0)]
     home_alt: f32,
 }
@@ -354,6 +397,7 @@ fn build_sensor_config(args: &Args) -> SensorConfig {
         gps_enabled: true,
         accel_saturation: 200.0, // BMI088: ±200 m/s²
         gyro_saturation: 34.9,   // BMI088: 2000 deg/s
+        chaos: ChaosConfig::default(),
     };
 
     // Apply sensor disable flags
@@ -470,8 +514,20 @@ fn write_output(
 
 // ---------------------------------------------------------------------------
 #[derive(Debug, Clone)]
+/// Metrics computed during filter tuning
 struct TuneMetrics {
+    /// 3D position RMSE (meters)
     pos3d_rmse_m: f64,
+    /// Altitude RMSE (meters)
+    alt_rmse_m: f64,
+    /// 3D velocity RMSE (m/s)
+    vel3d_rmse_m: f64,
+    /// Maximum position error (meters)
+    pos_max_m: f64,
+    /// Maximum altitude error (meters)
+    alt_max_m: f64,
+    /// Apogee detection error (seconds, positive = late detection)
+    apogee_time_error_s: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -492,8 +548,13 @@ fn get_param_spec(name: &str) -> (f64, f64) {
 
 fn compute_tune_metrics(sim: &SimResult, filter: &FilterResult) -> TuneMetrics {
     let n = sim.time.len();
-    let mut pos_err_sq = 0.0;
+    let mut pos_err_sq = 0.0_f64;
+    let mut alt_err_sq = 0.0_f64;
+    let mut vel_err_sq = 0.0_f64;
+    let mut pos_max: f64 = 0.0;
+    let mut alt_max: f64 = 0.0;
     let mut count = 0;
+
     for i in 0..n {
         if i >= filter.time.len() {
             break;
@@ -502,12 +563,39 @@ fn compute_tune_metrics(sim: &SimResult, filter: &FilterResult) -> TuneMetrics {
         let truth_pos = Vector3::new(sim.pos[i].x, sim.pos[i].y, sim.pos[i].z);
         let est_pos = &filter.position[i];
         let pos_err = truth_pos - Vector3::new(est_pos.x, est_pos.y, est_pos.z);
-        pos_err_sq += pos_err.norm_squared();
+        let pos_err_norm = pos_err.norm();
+        pos_err_sq += pos_err_norm.powi(2);
+        pos_max = pos_max.max(pos_err_norm);
+
+        // Altitude error (truth altitude = -z, est altitude = -z)
+        let truth_alt = -sim.pos[i].z;
+        let est_alt = -est_pos.z;
+        let alt_err = (truth_alt - est_alt).abs();
+        alt_err_sq += alt_err.powi(2);
+        alt_max = alt_max.max(alt_err);
+
+        // Velocity error
+        let truth_vel = &sim.vel[i];
+        let est_vel = &filter.velocity[i];
+        let vel_err = truth_vel - Vector3::new(est_vel.x, est_vel.y, est_vel.z);
+        vel_err_sq += vel_err.norm_squared();
 
         count += 1;
     }
+
+    // Calculate apogee time error
+    let apogee_time_error_s = match (sim.descent_time, filter.descent_time) {
+        (Some(sim_t), Some(filter_t)) => filter_t - sim_t,
+        _ => f64::NAN, // Not detected
+    };
+
     TuneMetrics {
         pos3d_rmse_m: (pos_err_sq / count as f64).sqrt(),
+        alt_rmse_m: (alt_err_sq / count as f64).sqrt(),
+        vel3d_rmse_m: (vel_err_sq / count as f64).sqrt(),
+        pos_max_m: pos_max,
+        alt_max_m: alt_max,
+        apogee_time_error_s,
     }
 }
 
@@ -559,7 +647,23 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
     let baseline_rmse = baseline_metrics.pos3d_rmse_m;
     println!("Baseline pos3d_rmse = {:.4} m", baseline_rmse);
 
-    let mut summary_rows = Vec::new();
+    /// Row data for tune sweep CSV output
+    struct SummaryRow {
+        iteration: usize,
+        param_name: String,
+        stage: usize,
+        value: f64,
+        seed: u64,
+        noise_scale: f64,
+        pos3d_rmse_m: f64,
+        alt_rmse_m: f64,
+        vel3d_rmse_m: f64,
+        pos_max_m: f64,
+        alt_max_m: f64,
+        apogee_time_error_s: f64,
+    }
+
+    let mut summary_rows: Vec<SummaryRow> = Vec::new();
 
     if tune_mode == "greedy" {
         // Implement greedy coordinate descent
@@ -609,7 +713,20 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
                             best_val = val;
                         }
 
-                        summary_rows.push((param_name.to_string(), stage_idx, val, rmse));
+                        summary_rows.push(SummaryRow {
+                            iteration: iter + 1,
+                            param_name: param_name.to_string(),
+                            stage: stage_idx,
+                            value: val,
+                            seed,
+                            noise_scale,
+                            pos3d_rmse_m: metrics.pos3d_rmse_m,
+                            alt_rmse_m: metrics.alt_rmse_m,
+                            vel3d_rmse_m: metrics.vel3d_rmse_m,
+                            pos_max_m: metrics.pos_max_m,
+                            alt_max_m: metrics.alt_max_m,
+                            apogee_time_error_s: metrics.apogee_time_error_s,
+                        });
                     }
 
                     // Update base config if improved
@@ -662,23 +779,61 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
             let filter_result = run_filter(&base_sim, &base_sensor_data, &cfg);
             let metrics = compute_tune_metrics(&base_sim, &filter_result);
 
-            summary_rows.push((tname.to_string(), 0, val, metrics.pos3d_rmse_m));
+            summary_rows.push(SummaryRow {
+                iteration: 0, // Grid sweep has no iterations
+                param_name: tname.to_string(),
+                stage: 0, // Applied to all stages
+                value: val,
+                seed,
+                noise_scale,
+                pos3d_rmse_m: metrics.pos3d_rmse_m,
+                alt_rmse_m: metrics.alt_rmse_m,
+                vel3d_rmse_m: metrics.vel3d_rmse_m,
+                pos_max_m: metrics.pos_max_m,
+                alt_max_m: metrics.alt_max_m,
+                apogee_time_error_s: metrics.apogee_time_error_s,
+            });
 
             println!("{} = {:.6}  rmse = {:.4}", tname, val, metrics.pos3d_rmse_m);
         }
     }
 
-    // Write CSV
+    // Write CSV with full metrics
     let path = args.output_dir.join("tune_sweep_summary.csv");
     std::fs::create_dir_all(&args.output_dir)?;
     let mut wtr = csv::Writer::from_path(&path)?;
-    wtr.write_record(["tuning_param", "stage", "value", "pos3d_rmse_m"])?;
-    for (param, stage, val, rmse) in summary_rows {
+    wtr.write_record([
+        "iteration",
+        "param_name",
+        "stage",
+        "value",
+        "seed",
+        "noise_scale",
+        "pos3d_rmse_m",
+        "alt_rmse_m",
+        "vel3d_rmse_m",
+        "pos_max_m",
+        "alt_max_m",
+        "apogee_time_error_s",
+    ])?;
+    for row in summary_rows {
         wtr.write_record([
-            &param,
-            &format!("{}", stage),
-            &format!("{:.6}", val),
-            &format!("{:.6}", rmse),
+            &format!("{}", row.iteration),
+            &row.param_name,
+            &format!("{}", row.stage),
+            &format!("{:.6}", row.value),
+            &format!("{}", row.seed),
+            &format!("{:.4}", row.noise_scale),
+            &format!("{:.6}", row.pos3d_rmse_m),
+            &format!("{:.6}", row.alt_rmse_m),
+            &format!("{:.6}", row.vel3d_rmse_m),
+            &format!("{:.6}", row.pos_max_m),
+            &format!("{:.6}", row.alt_max_m),
+            &if row.apogee_time_error_s.is_nan() {
+                "NA".to_string()
+            } else {
+                format!("{:.6}", row.apogee_time_error_s)
+            },
         ])?;
     }
     wtr.flush()?;

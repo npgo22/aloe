@@ -1,7 +1,6 @@
 //! Aloe - Hobby-rocket flight simulator
 
 use clap::{Parser, Subcommand};
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
 #[command(name = "aloe")]
@@ -33,13 +32,12 @@ enum Commands {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    // Initialize comprehensive tracing with OTEL support
+    aloe_gui::tracing_init::init_tracing().expect("Failed to initialize tracing");
 
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         Some(Commands::Cli { args }) => {
             // Pass through to aloe-cli
             let cli_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
@@ -50,7 +48,12 @@ fn main() -> anyhow::Result<()> {
             // Default to GUI mode
             run_gui(8080, "0.0.0.0")
         }
-    }
+    };
+
+    // Ensure spans are flushed before exit
+    aloe_gui::tracing_init::shutdown_tracing();
+
+    result
 }
 
 fn run_cli(args: &[&str]) -> anyhow::Result<()> {

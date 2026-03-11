@@ -17,6 +17,8 @@ serde = { workspace = true, optional = true }
 serde_json.workspace = true
 anyhow.workspace = true
 approx = "0.5.1"
+tracing.workspace = true
+katex-doc.workspace = true
 
 [features]
 default = ["serde"]

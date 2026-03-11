@@ -1,35 +1,239 @@
 //! # 6-DOF Rocket Flight Simulator
 //!
-//! A high-fidelity six-degree-of-freedom rocket trajectory simulator that models:
-//! - Full 3D rigid body dynamics using quaternions for attitude representation
-//! - Aerodynamic forces (drag and lift) with angle of attack effects
-//! - Time-varying mass and center of gravity during propellant burn
-//! - Launch rail constraints
-//! - Exponential atmosphere model
-//! - Wind effects
-//! - RK4 numerical integration
+//! High-fidelity six-degree-of-freedom rigid body dynamics simulator for hobby rocket trajectories.
+//! Implements the complete equations of motion including aerodynamics, thrust, gravity, and
+//! time-varying mass properties.
+//!
+//! ## Physical Model: Rigid Body Dynamics
+//!
+//! The rocket is modeled as a rigid body with 12 state variables:
+//! - **Position** <span class="katex-inline">$\mathbf{r} \in \mathbb{R}^3$</span>: NED coordinates (m)
+//! - **Velocity** <span class="katex-inline">$\mathbf{v} \in \mathbb{R}^3$</span>: NED velocity (m/s)
+//! - **Quaternion** <span class="katex-inline">$\mathbf{q} \in \mathbb{H}$</span>: Body → NED orientation
+//! - **Angular velocity** <span class="katex-inline">$\boldsymbol{\omega} \in \mathbb{R}^3$</span>: Body-frame angular rates (rad/s)
+//!
+//! ## Equations of Motion
+//!
+//! ### Translational Dynamics (Newton's Second Law)
+//!
+//! The position and velocity evolve according to:
+//! <span class="katex-display">$$
+//! \begin{aligned}
+//! \frac{d\mathbf{r}}{dt} &= \mathbf{v} \\
+//! \frac{d\mathbf{v}}{dt} &= \frac{1}{m(t)}\sum \mathbf{F} = \frac{1}{m}\left(\mathbf{F}_{thrust} + \mathbf{F}_{aero} + \mathbf{F}_{gravity}\right)
+//! \end{aligned}
+//! $$</span>
+//!
+//! ### Rotational Dynamics (Euler's Equation)
+//!
+//! Quaternion kinematics:
+//! <span class="katex-display">$$
+//! \frac{d\mathbf{q}}{dt} = \frac{1}{2}\mathbf{q} \otimes \boldsymbol{\omega}
+//! $$</span>
+//!
+//! Angular acceleration (assuming axisymmetric rocket, <span class="katex-inline">$I_x = I_y$</span>):
+//! <span class="katex-display">$$
+//! \frac{d\boldsymbol{\omega}}{dt} = \mathbf{I}^{-1}\left(\boldsymbol{\tau} - \boldsymbol{\omega} \times (\mathbf{I}\boldsymbol{\omega})\right)
+//! $$</span>
+//!
+//! where <span class="katex-inline">$\mathbf{I}$</span> is the moment of inertia tensor and <span class="katex-inline">$\boldsymbol{\tau}$</span> is the applied torque.
+//!
+//! ## Force Models
+//!
+//! ### 1. Thrust Force
+//!
+//! <span class="katex-display">$$
+//! \mathbf{F}_{thrust} = \begin{cases}
+//! T \cdot \mathbf{R}(\mathbf{q})\hat{\mathbf{e}}_x & t < t_{burnout} \\
+//! \mathbf{0} & t \geq t_{burnout}
+//! \end{cases}
+//! $$</span>
+//!
+//! where:
+//! - <span class="katex-inline">$T$</span>: Thrust magnitude (N)
+//! - <span class="katex-inline">$\mathbf{R}(\mathbf{q})$</span>: Rotation matrix (body → NED)
+//! - <span class="katex-inline">$\hat{\mathbf{e}}_x = [1, 0, 0]^T$</span>: Body-frame thrust direction
+//!
+//! **Thrust misalignment** can be modeled by canting the thrust vector:
+//! <span class="katex-display">$$
+//! \hat{\mathbf{e}}_x^{cant} = \begin{bmatrix} \cos\theta_{cant} \\ \sin\theta_{cant} \\ 0 \end{bmatrix}
+//! $$</span>
+//!
+//! ### 2. Aerodynamic Forces
+//!
+//! The aerodynamic force depends on dynamic pressure and angle of attack:
+//! <span class="katex-display">$$
+//! \mathbf{F}_{aero} = q \cdot A_{ref} \left( C_D \hat{\mathbf{v}} + C_L \hat{\mathbf{n}} \right)
+//! $$</span>
+//!
+//! where:
+//! - Dynamic pressure: <span class="katex-inline">$q = \frac{1}{2}\rho v^2$</span> (Pa)
+//! - Reference area: <span class="katex-inline">$A_{ref}$</span> (m²)
+//! - Velocity unit vector: <span class="katex-inline">$\hat{\mathbf{v}} = \mathbf{v}_{rel}/|\mathbf{v}_{rel}|$</span>
+//! - Normal unit vector: <span class="katex-inline">$\hat{\mathbf{n}} = \hat{\mathbf{x}}_{body} \times \hat{\mathbf{v}}$</span>
+//! - Drag coefficient: <span class="katex-inline">$C_D \approx 0.3$</span>-$0.75$
+//! - Lift coefficient: <span class="katex-inline">$C_L = C_{L\alpha} \alpha$</span>
+//!
+//! **Angle of Attack**:
+//! <span class="katex-display">$$
+//! \alpha = \arccos\left(\hat{\mathbf{x}}_{body} \cdot \hat{\mathbf{v}}\right)
+//! $$</span>
+//!
+//! For rockets, lift is typically small compared to drag unless the rocket is significantly
+//! off-axis (weathercocking).
+//!
+//! ### 3. Gravity Force
+//!
+//! <span class="katex-display">$$
+//! \mathbf{F}_{gravity} = m(t) \mathbf{g}_{NED} = m(t) \begin{bmatrix} 0 \\ 0 \\ +9.80665 \end{bmatrix}~\text{N}
+//! $$</span>
+//!
+//! Note: In NED frame, gravity points down (positive Z).
+//!
+//! ## Mass Properties
+//!
+//! ### Time-Varying Mass
+//!
+//! During motor burn, the mass decreases linearly:
+//! <span class="katex-display">$$
+//! m(t) = \begin{cases}
+//! m_{dry} + m_{prop}\left(1 - \frac{t}{t_{burn}}\right) & t < t_{burn} \\
+//! m_{dry} & t \geq t_{burn}
+//! \end{cases}
+//! $$</span>
+//!
+//! ### Moment of Inertia
+//!
+//! For an axisymmetric rocket (cylinder approximation):
+//! <span class="katex-display">$$
+//! \begin{aligned}
+//! I_{longitudinal} &= \frac{1}{2}m R^2 \\
+//! I_{transverse} &= \frac{1}{12}m\left(3R^2 + L^2\right)
+//! \end{aligned}
+//! $$</span>
+//!
+//! where <span class="katex-inline">$R$</span> is rocket radius and <span class="katex-inline">$L$</span> is length.
+//!
+//! ## Atmospheric Model
+//!
+//! Air density decreases exponentially with altitude:
+//! <span class="katex-display">$$
+//! \rho(h) = \rho_0 \exp\left(-\frac{h}{H_s}\right)
+//! $$</span>
+//!
+//! where:
+//! - <span class="katex-inline">$\rho_0 = 1.225~\text{kg/m}^3$</span>: Sea-level density
+//! - <span class="katex-inline">$H_s = 7400~\text{m}$</span>: Scale height
+//! - <span class="katex-inline">$h$</span>: Altitude above ground level (m)
+//!
+//! ## Numerical Integration: RK4
+//!
+//! The state is advanced using 4th-order Runge-Kutta with fixed timestep <span class="katex-inline">$\Delta t = 1~\text{ms}$</span>:
+//!
+//! <span class="katex-display">$$
+//! \begin{aligned}
+//! \mathbf{k}_1 &= f(\mathbf{x}_n, t_n) \\
+//! \mathbf{k}_2 &= f(\mathbf{x}_n + \frac{\Delta t}{2}\mathbf{k}_1, t_n + \frac{\Delta t}{2}) \\
+//! \mathbf{k}_3 &= f(\mathbf{x}_n + \frac{\Delta t}{2}\mathbf{k}_2, t_n + \frac{\Delta t}{2}) \\
+//! \mathbf{k}_4 &= f(\mathbf{x}_n + \Delta t \mathbf{k}_3, t_n + \Delta t) \\
+//! \mathbf{x}_{n+1} &= \mathbf{x}_n + \frac{\Delta t}{6}(\mathbf{k}_1 + 2\mathbf{k}_2 + 2\mathbf{k}_3 + \mathbf{k}_4)
+//! \end{aligned}
+//! $$</span>
+//!
+//! RK4 provides <span class="katex-inline">$O(\Delta t^4)$</span> local truncation error, sufficient for accurate trajectory prediction.
 //!
 //! ## Coordinate Systems
 //!
-//! - **World Frame (NED)**: North-East-Down
-//!   - X: North
-//!   - Y: East
-//!   - Z: Down (positive Z is below ground)
-//!   - Origin at launch site
+//! ### NED Frame (World/Inertial)
+//! - **X**: North (m)
+//! - **Y**: East (m)
+//! - **Z**: Down (m, positive toward Earth's center)
+//! - **Origin**: Launch site at <span class="katex-inline">$(0, 0, 0)$</span>
 //!
-//! - **Body Frame**: Fixed to rocket
-//!   - X: Along rocket axis (nose to tail)
-//!   - Y: Right wing
-//!   - Z: Down when rocket is vertical
+//! ### Body Frame
+//! - **X**: Along rocket longitudinal axis (nose → tail)
+//! - **Y**: Right wing (if present)
+//! - **Z**: Completes right-handed system
 //!
-//! ## Physics Notes
+//! ### Quaternion Convention
+//! The quaternion <span class="katex-inline">$\mathbf{q} = [q_w, q_x, q_y, q_z]$</span> represents rotation from **body → NED**.
+//! To transform a vector <span class="katex-inline">$\mathbf{v}_{body}$</span> to NED:
+//! <span class="katex-display">$$
+//! \mathbf{v}_{NED} = \mathbf{R}(\mathbf{q}) \mathbf{v}_{body} = \mathbf{q} \otimes \mathbf{v}_{body} \otimes \mathbf{q}^*
+//! $$</span>
 //!
-//! - Uses RK4 integration with fixed timestep for stability
-//! - Proper acceleration (accelerometer output) excludes gravity
-//! - Quaternion normalization handled implicitly by UnitQuaternion
-//! - Launch rail constrains lateral motion and rotation until clearance
+//! ## Simulation Flow
+//!
+//! ```plantuml
+//! @startuml
+//! !theme plain
+//! start
+//! :Initialize State\n(position, velocity,\nquaternion, ω);
+//! :Set rocket parameters\n(mass, thrust, Cd, A);
+//! while (t < t_max AND altitude > 0?) is (yes)
+//!   :Calculate forces:\n- Thrust F_T\n- Drag F_D\n- Gravity F_g;
+//!   :Calculate torques:\n- Aerodynamic τ_aero\n- Thrust misalignment τ_T;
+//!   :RK4 Integration:\n- Position\n- Velocity\n- Quaternion\n- Angular velocity;
+//!   :Update mass:\nm(t) = m_dry + m_prop(1-t/t_burn);
+//!   :Store state\n(pos, vel, accel);
+//!   :Increment time:\nt += Δt (1ms);
+//! endwhile (no)
+//! :Detect flight events:\n- Launch\n- Burnout\n- Apogee\n- Landing;
+//! :Return trajectory;
+//! stop
+//! @enduml
+//! ```
+//!
+//! ## Launch Rail Constraints
+//!
+//! For the first few meters (typically 1-3m), the rocket is constrained by a launch rail that
+//! prevents lateral motion and rotation. During this phase:
+//! - Lateral position: <span class="katex-inline">$x = y = 0$</span>
+//! - Lateral velocity: <span class="katex-inline">$v_x = v_y = 0$</span>
+//! - Attitude: <span class="katex-inline">$\mathbf{q} = \mathbf{q}_0$</span> (vertical)
+//!
+//! The rocket clears the rail when <span class="katex-inline">$|z| > L_{rail}$</span>.
+//!
+//! ## Wind Effects
+//!
+//! Wind modifies the relative velocity used for aerodynamic calculations:
+//! <span class="katex-display">$$
+//! \mathbf{v}_{rel} = \mathbf{v}_{rocket} - \mathbf{v}_{wind}
+//! $$</span>
+//!
+//! Constant wind causes the rocket to weathercock (rotate into the wind) due to aerodynamic
+//! stability. The center of pressure (CP) being aft of the center of gravity (CG) creates a
+//! restoring moment.
+//!
+//! ## Stability Criterion
+//!
+//! For stable flight, the center of pressure must be aft of the center of gravity:
+//! <span class="katex-display">$$
+//! \text{Stability Margin} = \frac{CP - CG}{d} > 1~\text{caliber}
+//! $$</span>
+//!
+//! where <span class="katex-inline">$d$</span> is rocket diameter.
+//!
+//! ## Usage Example
+//!
+//! ```
+//! use aloe_sim::sim::{simulate_6dof, RocketParams};
+//!
+//! // Use default rocket configuration
+//! let rocket = RocketParams::default();
+//!
+//! let result = simulate_6dof(&rocket);
+//! println!("Apogee: {:.1} m", result.max_altitude());
+//! ```
+//!
+//! ## References
+//! - Niskanen, S. (2013). "OpenRocket technical documentation"
+//! - Barrowman, J. (1967). "The theoretical prediction of the center of pressure"
+//! - Stengel, R. F. (2004). "Flight Dynamics"
+//! - Stevens & Lewis (2015). "Aircraft Control and Simulation"
 
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+use tracing::info;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -310,6 +514,15 @@ pub struct SimResult {
 
     /// Orientation quaternions (Body → World)
     pub orientation: Vec<UnitQuaternion<f64>>,
+
+    /// Time when simulation detected transition to Ascent (burn start)
+    pub ascent_time: Option<f64>,
+
+    /// Time when simulation detected transition to Coast (burnout)
+    pub coast_time: Option<f64>,
+
+    /// Time when simulation detected transition to Descent (apogee)
+    pub descent_time: Option<f64>,
 }
 
 impl SimResult {
@@ -607,8 +820,9 @@ fn interpolate_thrust(curve: &[(f64, f64)], t: f64) -> f64 {
         return curve[0].1;
     }
 
-    if t >= curve.last().unwrap().0 {
-        return curve.last().unwrap().1;
+    let last_point = curve.last().unwrap();
+    if t >= last_point.0 {
+        return last_point.1;
     }
 
     for i in 0..curve.len() - 1 {
@@ -617,6 +831,56 @@ fn interpolate_thrust(curve: &[(f64, f64)], t: f64) -> f64 {
             if dt <= 0.0 {
                 return curve[i].1;
             }
+            let frac = (t - curve[i].0) / dt;
+            return curve[i].1 + frac * (curve[i + 1].1 - curve[i].1);
+        }
+    }
+
+    0.0
+}
+
+/// Interpolate thrust from a time-value curve with cached index optimization.
+/// Optimized to start search from a cached index since time increases monotonically.
+/// Use this in the main simulation loop where time is strictly increasing.
+#[inline]
+fn interpolate_thrust_cached(curve: &[(f64, f64)], t: f64, last_idx: &mut usize) -> f64 {
+    if curve.is_empty() {
+        return 0.0;
+    }
+
+    if t <= curve[0].0 {
+        return curve[0].1;
+    }
+
+    let last_point = curve.last().unwrap();
+    if t >= last_point.0 {
+        return last_point.1;
+    }
+
+    // Start from cached index since time increases monotonically
+    let start_idx = (*last_idx).min(curve.len() - 1);
+
+    // Search forward from cached index
+    for i in start_idx..curve.len() - 1 {
+        if t >= curve[i].0 && t <= curve[i + 1].0 {
+            let dt = curve[i + 1].0 - curve[i].0;
+            if dt <= 0.0 {
+                return curve[i].1;
+            }
+            *last_idx = i; // Cache for next call
+            let frac = (t - curve[i].0) / dt;
+            return curve[i].1 + frac * (curve[i + 1].1 - curve[i].1);
+        }
+    }
+
+    // Fallback to linear search from beginning (shouldn't happen often)
+    for i in 0..start_idx {
+        if t >= curve[i].0 && t <= curve[i + 1].0 {
+            let dt = curve[i + 1].0 - curve[i].0;
+            if dt <= 0.0 {
+                return curve[i].1;
+            }
+            *last_idx = i;
             let frac = (t - curve[i].0) / dt;
             return curve[i].1 + frac * (curve[i + 1].1 - curve[i].1);
         }
@@ -680,10 +944,22 @@ pub fn simulate_6dof(p: &RocketParams) -> SimResult {
         accel_body: Vec::with_capacity(max_steps),
         ang_vel: Vec::with_capacity(max_steps),
         orientation: Vec::with_capacity(max_steps),
+        ascent_time: None,
+        coast_time: None,
+        descent_time: None,
     };
 
     // Track whether rocket has left the launch rail (to avoid re-constraining at landing)
     let mut has_left_rail = false;
+
+    // Track state transitions
+    let mut ascent_detected = false;
+    let mut coast_detected = false;
+    let mut descent_detected = false;
+    const THRUST_THRESHOLD: f64 = 10.0; // Newtons - threshold to consider motor ignited
+
+    // Cached index for thrust curve interpolation (optimization)
+    let mut thrust_curve_idx: usize = 0;
 
     for step in 0..max_steps {
         // Record current state
@@ -762,9 +1038,37 @@ pub fn simulate_6dof(p: &RocketParams) -> SimResult {
 
             // Force attitude to point straight up (body X-axis aligned with -Z in NED)
             // This prevents wind-induced pitch/yaw while on the rail
-            let vertical_att = UnitQuaternion::rotation_between(&Vector3::x_axis(), &-Vector3::z_axis())
-                .expect("Failed to create vertical orientation");
+            let vertical_att =
+                UnitQuaternion::rotation_between(&Vector3::x_axis(), &-Vector3::z_axis())
+                    .expect("Failed to create vertical orientation");
             s.att = vertical_att;
+        }
+
+        // State transition detection
+        // Calculate current thrust to detect motor burn phases
+        let current_thrust = if s.t >= p.launch_delay && s.mass > p.dry_mass {
+            interpolate_thrust_cached(&p.thrust_curve, s.t - p.launch_delay, &mut thrust_curve_idx)
+        } else {
+            0.0
+        };
+
+        // Detect Ascent (motor ignition)
+        if !ascent_detected && current_thrust > THRUST_THRESHOLD {
+            res.ascent_time = Some(s.t);
+            ascent_detected = true;
+        }
+
+        // Detect Coast (burnout) - thrust drops to zero after motor was burning
+        if ascent_detected && !coast_detected && current_thrust < THRUST_THRESHOLD {
+            res.coast_time = Some(s.t);
+            coast_detected = true;
+        }
+
+        // Detect Descent (apogee) - vertical velocity changes from up (negative) to down (positive)
+        // In NED: negative Z velocity = going up, positive Z velocity = going down
+        if coast_detected && !descent_detected && s.vel_w.z > 0.0 {
+            res.descent_time = Some(s.t);
+            descent_detected = true;
         }
 
         // Termination: rocket has returned to ground after flight
@@ -783,7 +1087,7 @@ pub fn simulate_6dof(p: &RocketParams) -> SimResult {
 
         // Progress indicator for long simulations
         if step % 100000 == 0 && step > 0 {
-            eprintln!("Simulation progress: {:.1}s / {:.1}s", s.t, MAX_TIME);
+            info!("Simulation progress: {:.1}s / {:.1}s", s.t, MAX_TIME);
         }
     }
 
@@ -1330,5 +1634,53 @@ mod tests {
             100.0 * final_spin / initial_spin
         );
         assert!(final_spin.abs() > 5.0); // Still spinning
+    }
+
+    #[test]
+    fn test_state_transition_detection() {
+        // Test with default rocket (5-second burn)
+        let p = RocketParams::default();
+        let result = simulate_6dof(&p);
+
+        // All transitions should be detected
+        assert!(
+            result.ascent_time.is_some(),
+            "Ascent time should be detected"
+        );
+        assert!(result.coast_time.is_some(), "Coast time should be detected");
+        assert!(
+            result.descent_time.is_some(),
+            "Descent time should be detected"
+        );
+
+        let ascent_t = result.ascent_time.unwrap();
+        let coast_t = result.coast_time.unwrap();
+        let descent_t = result.descent_time.unwrap();
+
+        eprintln!("State transitions:");
+        eprintln!("  Ascent (burn start): {:.3}s", ascent_t);
+        eprintln!("  Coast (burnout):     {:.3}s", coast_t);
+        eprintln!("  Descent (apogee):    {:.3}s", descent_t);
+
+        // Transitions should occur in correct order
+        assert!(ascent_t < coast_t, "Ascent should occur before coast");
+        assert!(coast_t < descent_t, "Coast should occur before descent");
+
+        // Ascent should happen shortly after launch delay (default 1s)
+        assert!(ascent_t >= p.launch_delay, "Ascent after launch delay");
+        assert!(ascent_t < p.launch_delay + 0.1, "Ascent detected quickly");
+
+        // Coast should happen near end of burn (5s burn + 1s delay = 6s)
+        let expected_burnout = p.launch_delay + p.burn_time;
+        assert!(
+            (coast_t - expected_burnout).abs() < 0.1,
+            "Coast detected near burnout time"
+        );
+
+        // Descent should happen after coast
+        assert!(
+            descent_t > coast_t + 1.0,
+            "Descent happens well after coast"
+        );
     }
 }

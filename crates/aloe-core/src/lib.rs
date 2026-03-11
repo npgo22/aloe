@@ -12,6 +12,7 @@
 //! - Default: `no_std` with no allocations (bare metal embedded)
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::doc_lazy_continuation)] // KaTeX LaTeX in docs
 
 #[cfg(feature = "std")]
 extern crate std;

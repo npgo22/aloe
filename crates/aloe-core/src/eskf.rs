@@ -1,24 +1,250 @@
-//! # RocketEsKf — Error-State Kalman Filter
+//! # Error-State Kalman Filter for Rocket Navigation
 //!
-//! ## Coordinate conventions (held throughout)
-//! - **Frame**: NED (North-East-Down).  Positive Z points toward the centre of
-//!   the Earth; altitude above ground is therefore **negative** Z.
-//! - **Gravity**: `[0, 0, +g]` in NED.
-//! - **Quaternion** `q`: rotates vectors from **body → NED**.
-//! - **Altitude**: all internal altitudes are NED-Down, i.e. `pos.z = -alt_agl`.
+//! This module implements a 15-state Error-State Kalman Filter (ESKF) for 6-DOF rocket state
+//! estimation using IMU, GPS, barometer, and magnetometer measurements. The ESKF is preferred
+//! over a standard EKF because it maintains the quaternion constraint naturally and has superior
+//! numerical properties for highly dynamic vehicles.
 //!
-//! ## Error-state layout (15-element vector δx)
+//! ## Theory: Error-State Formulation
+//!
+//! The filter maintains two representations of the state:
+//! - **Nominal state** $\mathbf{x}$: Best estimate (position, velocity, quaternion, biases)
+//! - **Error state** $\delta\mathbf{x}$: Small deviation from nominal (15-element vector)
+//!
+//! The true state is the composition:
+//!
+//! $$\mathbf{x}_{\text{true}} = \mathbf{x} \oplus \delta\mathbf{x}$$
+//!
+//! where $\oplus$ represents the appropriate composition operator (addition for vectors,
+//! quaternion multiplication for attitude).
+//!
+//! ## State Vector Layout
+//!
+//! ### Nominal State (21 elements)
+//! - **Position** $\mathbf{p} \in \mathbb{R}^3$: NED coordinates (m)
+//! - **Velocity** $\mathbf{v} \in \mathbb{R}^3$: NED velocity (m/s)
+//! - **Quaternion** $\mathbf{q} \in \mathbb{H}$: Body → NED rotation
+//! - **Accel bias** $\mathbf{b}_a \in \mathbb{R}^3$: IMU accelerometer bias (m/s²)
+//! - **Gyro bias** $\mathbf{b}_g \in \mathbb{R}^3$: IMU gyroscope bias (rad/s)
+//!
+//! ### Error State (15 elements)
+//!
+//! $$\delta\mathbf{x} = \begin{bmatrix} \delta\mathbf{p} \\ \delta\mathbf{v} \\ \delta\boldsymbol{\theta} \\ \delta\mathbf{b}_a \\ \delta\mathbf{b}_g \end{bmatrix}$$
+//!
+//! where:
+//! - $\delta\mathbf{p}$ [0..2]: Position error (m)
+//! - $\delta\mathbf{v}$ [3..5]: Velocity error (m/s)
+//! - $\delta\boldsymbol{\theta}$ [6..8]: Attitude error as rotation vector (rad)
+//! - $\delta\mathbf{b}_a$ [9..11]: Accelerometer bias error (m/s²)
+//! - $\delta\mathbf{b}_g$ [12..14]: Gyroscope bias error (rad/s)
+//!
+//! ## Coordinate System: NED (North-East-Down)
+//!
+//! - **X-axis**: Points north (positive = north)
+//! - **Y-axis**: Points east (positive = east)
+//! - **Z-axis**: Points down (positive = toward Earth's center)
+//! - **Gravity**: $\mathbf{g} = [0, 0, +9.80665]^T$ m/s²
+//! - **Altitude**: Stored as negative Z: $h_{AGL} = -p_z$
+//!
+//! ## Prediction Step
+//!
+//! ### IMU Measurement Model
+//!
+//! Raw IMU measurements include sensor noise and bias:
+//!
+//! $$\tilde{\mathbf{a}} = \mathbf{a}_m + \mathbf{b}_a + \mathbf{n}_a$$
+//! $$\tilde{\boldsymbol{\omega}} = \boldsymbol{\omega}_m + \mathbf{b}_g + \mathbf{n}_g$$
+//!
+//! where $\mathbf{n}_a$, $\mathbf{n}_g$ are white noise processes.
+//!
+//! ### Nominal State Propagation
+//!
+//! $$\dot{\mathbf{p}} = \mathbf{v}$$
+//! $$\dot{\mathbf{v}} = \mathbf{R}(\mathbf{q})(\tilde{\mathbf{a}} - \mathbf{b}_a) + \mathbf{g}$$
+//! $$\dot{\mathbf{q}} = \frac{1}{2}\mathbf{q} \otimes \boldsymbol{\omega}$$
+//!
+//! where $\mathbf{R}(\mathbf{q})$ is the rotation matrix (body → NED) and
+//! $\boldsymbol{\omega} = \tilde{\boldsymbol{\omega}} - \mathbf{b}_g$.
+//!
+//! ### Error-State Propagation
+//!
+//! The error covariance propagates according to:
+//!
+//! $$\dot{\mathbf{P}} = \mathbf{F}\mathbf{P} + \mathbf{P}\mathbf{F}^T + \mathbf{Q}$$
+//!
+//! where the state transition matrix $\mathbf{F}$ is:
+//!
+//! $$\mathbf{F} = \begin{bmatrix} \mathbf{0} & \mathbf{I} & \mathbf{0} & \mathbf{0} & \mathbf{0} \\ \mathbf{0} & \mathbf{0} & -\mathbf{R}[\mathbf{a}]_\times & -\mathbf{R} & \mathbf{0} \\ \mathbf{0} & \mathbf{0} & -[\boldsymbol{\omega}]_\times & \mathbf{0} & -\mathbf{I} \\ \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} \\ \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} & \mathbf{0} \end{bmatrix}$$
+//!
+//! and $[\mathbf{v}]_\times$ denotes the skew-symmetric cross-product matrix.
+//!
+//! ## Update Step (Measurement Fusion)
+//!
+//! ### GPS Position Update
+//!
+//! Measurement model:
+//! <span class="katex-display">$$
+//! \mathbf{z}_{GPS,p} = \mathbf{p} + \mathbf{v}_{GPS,p}
+//! $$</span>
+//!
+//! where <span class="katex-inline">$\mathbf{v}_{GPS,p} \sim \mathcal{N}(\mathbf{0}, \mathbf{R}_{GPS,p})$</span>.
+//!
+//! Observation matrix: <span class="katex-inline">$\mathbf{H} = [\mathbf{I}_{3\times3} \, \mathbf{0}_{3\times12}]$</span>
+//!
+//! ### GPS Velocity Update
+//!
+//! <span class="katex-display">$$
+//! \mathbf{z}_{GPS,v} = \mathbf{v} + \mathbf{v}_{GPS,v}
+//! $$</span>
+//!
+//! Observation matrix: <span class="katex-inline">$\mathbf{H} = [\mathbf{0}_{3\times3} \, \mathbf{I}_{3\times3} \, \mathbf{0}_{3\times9}]$</span>
+//!
+//! ### Barometer Update
+//!
+//! The barometer measures altitude via static pressure using the barometric formula:
+//! <span class="katex-display">$$
+//! h = h_0 + H_s \ln\left(\frac{P_0}{P}\right)
+//! $$</span>
+//!
+//! where <span class="katex-inline">$H_s = 7400$</span> m is the scale height.
+//!
+//! Measurement model:
+//! <span class="katex-display">$$
+//! z_{baro} = -p_z + v_{baro}
+//! $$</span>
+//!
+//! Observation matrix: <span class="katex-inline">$\mathbf{H} = [\mathbf{e}_3^T \, \mathbf{0}_{1\times12}]$</span> where <span class="katex-inline">$\mathbf{e}_3 = [0, 0, 1]^T$</span>
+//!
+//! ### Magnetometer Update
+//!
+//! The magnetometer measures the Earth's magnetic field in body frame. Assuming known field
+//! direction in NED (declination angle <span class="katex-inline">$\delta$</span>):
+//! <span class="katex-display">$$
+//! \mathbf{z}_{mag} = \mathbf{R}^T(\mathbf{q}) \mathbf{m}_{NED} + \mathbf{v}_{mag}
+//! $$</span>
+//!
+//! where <span class="katex-inline">$\mathbf{m}_{NED} = [\cos\delta, 0, \sin\delta]^T$</span> (unit vector).
+//!
+//! ### Kalman Gain and State Correction
+//!
+//! <span class="katex-display">$$
+//! \begin{aligned}
+//! \mathbf{S} &= \mathbf{H}\mathbf{P}\mathbf{H}^T + \mathbf{R} \\
+//! \mathbf{K} &= \mathbf{P}\mathbf{H}^T\mathbf{S}^{-1} \\
+//! \delta\mathbf{x} &= \mathbf{K}(\mathbf{z} - \mathbf{h}(\mathbf{x})) \\
+//! \mathbf{P} &= (\mathbf{I} - \mathbf{K}\mathbf{H})\mathbf{P}
+//! \end{aligned}
+//! $$</span>
+//!
+//! After each update, the error state is injected into the nominal state and reset:
+//! <span class="katex-display">$$
+//! \begin{aligned}
+//! \mathbf{p} &\leftarrow \mathbf{p} + \delta\mathbf{p} \\
+//! \mathbf{v} &\leftarrow \mathbf{v} + \delta\mathbf{v} \\
+//! \mathbf{q} &\leftarrow \mathbf{q} \otimes \exp(\delta\boldsymbol{\theta}/2) \\
+//! \mathbf{b}_a &\leftarrow \mathbf{b}_a + \delta\mathbf{b}_a \\
+//! \mathbf{b}_g &\leftarrow \mathbf{b}_g + \delta\mathbf{b}_g \\
+//! \delta\mathbf{x} &\leftarrow \mathbf{0}
+//! \end{aligned}
+//! $$</span>
+//!
+//! ## GPS Latency Compensation
+//!
+//! GPS measurements arrive with latency (typically 50-150ms). The filter maintains a ring buffer
+//! of 256 historical states with microsecond timestamps. When a GPS measurement arrives:
+//!
+//! 1. Find the closest historical state by timestamp
+//! 2. Perform the update at that historical time
+//! 3. Propagate the correction forward to the current time
+//!
 //! ```text
-//!  [0..2]   δpos   (m)
-//!  [3..5]   δvel   (m/s)
-//!  [6..8]   δθ     (rad, rotation-vector error)
-//!  [9..11]  δb_a   (m/s², accelerometer bias)
-//!  [12..14] δb_g   (rad/s, gyroscope bias)
+//! ┌─────────────────────────────────────────────────────┐
+//! │         Ring Buffer (256 entries)                   │
+//! │  [state₀, state₁, ..., stateₙ]                     │
+//! │     ↓        ↓           ↓                          │
+//! │   t=0ms   t=10ms     t=current                     │
+//! │                ↑                                     │
+//! │             GPS arrives with                        │
+//! │             timestamp t=10ms                        │
+//! │             (current time t=160ms)                  │
+//! └─────────────────────────────────────────────────────┘
 //! ```
 //!
+//! ## Filter Architecture
+//!
+//! ```plantuml
+//! @startuml
+//! !theme plain
+//! skinparam backgroundColor #FEFEFE
+//! skinparam component {
+//!   BackgroundColor<<imu>> LightBlue
+//!   BackgroundColor<<gps>> LightGreen
+//!   BackgroundColor<<baro>> LightYellow
+//!   BackgroundColor<<mag>> LightCoral
+//!   BackgroundColor<<filter>> LightGray
+//! }
+//!
+//! [IMU\nAccel + Gyro] <<imu>> as imu
+//! [GPS\nPosition + Velocity] <<gps>> as gps
+//! [Barometer\nAltitude] <<baro>> as baro
+//! [Magnetometer\nHeading] <<mag>> as mag
+//!
+//! package "ESKF Core" <<filter>> {
+//!   [Prediction\n(IMU Integration)] as predict
+//!   [GPS\nUpdate] as gps_update
+//!   [Baro\nUpdate] as baro_update
+//!   [Mag\nUpdate] as mag_update
+//!   [State\nInjection] as inject
+//!   database "History\nBuffer\n(256)" as history
+//! }
+//!
+//! [Estimated State\nPosition/Velocity/Attitude] as output
+//!
+//! imu --> predict : 1000 Hz
+//! predict --> history : Store
+//! predict --> output
+//!
+//! gps --> gps_update : 10 Hz\n(delayed)
+//! history --> gps_update : Fetch\nhistorical
+//! gps_update --> inject
+//!
+//! baro --> baro_update : 100 Hz
+//! baro_update --> inject
+//!
+//! mag --> mag_update : 100 Hz
+//! mag_update --> inject
+//!
+//! inject --> predict : Corrected\nstate
+//! inject --> output
+//!
+//! @enduml
+//! ```
+//!
+//! ## Tuning Parameters
+//!
+//! The filter's performance depends critically on the noise covariance matrices:
+//!
+//! ### Process Noise <span class="katex-inline">$\mathbf{Q}$</span>
+//! - `accel_noise_density`: IMU accelerometer noise (m/s²/√Hz)
+//! - `gyro_noise_density`: IMU gyroscope noise (rad/s/√Hz)
+//! - `accel_bias_instability`: Accel bias random walk (m/s²)
+//! - `gyro_bias_instability`: Gyro bias random walk (rad/s)
+//! - `pos_process_noise`: Position process noise (m²)
+//!
+//! ### Measurement Noise <span class="katex-inline">$\mathbf{R}$</span>
+//! - `r_gps_pos`: GPS position variance (m²)
+//! - `r_gps_vel`: GPS velocity variance ((m/s)²)
+//! - `r_baro`: Barometer altitude variance (m²)
+//! - `r_mag`: Magnetometer heading variance (rad²)
+//!
+//! **Pro tip**: These parameters can be tuned per-flight-stage (Pad/Ascent/Coast/Descent/Landed)
+//! using greedy coordinate descent to minimize position RMSE. See `aloe-cli --tune-sweep`.
+//!
 //! ## References
-//! - Sola, "Quaternion kinematics for ESKF" (2017)
-//! - PX4 EKF2 implementation notes
+//! - Sola, J. (2017). "Quaternion kinematics for the error-state Kalman filter"
+//! - Farrell, J. A. (2008). "Aided Navigation: GPS with High Rate Sensors"
+//! - PX4 ECL EKF2 implementation
+//! - Crassidis & Junkins (2011). "Optimal Estimation of Dynamic Systems"
 
 use crate::lut_data::{cos_lut, pressure_ratio_to_altitude_lut, sin_lut};
 use nalgebra::{Matrix1, Matrix3, SMatrix, SVector, Unit, UnitQuaternion, Vector1, Vector3};
@@ -284,12 +510,6 @@ impl RocketEsKf {
             alt0_m: alt_m as Scalar,
         });
         self.state.position = V3::zeros();
-    }
-
-    /// Convenience alias kept for back-compat.
-    #[inline]
-    pub fn set_home_location(&mut self, lat_deg: f32, lon_deg: f32, alt_m: f32) {
-        self.set_home(lat_deg, lon_deg, alt_m);
     }
 }
 
@@ -719,4 +939,160 @@ fn symmetrise(m: &mut Cov15) {
 #[inline]
 fn f32v3_to_f64(v: Vector3<f32>) -> V3 {
     V3::new(v.x as Scalar, v.y as Scalar, v.z as Scalar)
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use super::*;
+
+    fn default_tuning() -> EskfTuning {
+        EskfTuning {
+            accel_noise_density: 0.2236,
+            gyro_noise_density: 0.03728,
+            accel_bias_instability: 0.01,
+            gyro_bias_instability: 3.728e-5,
+            pos_process_noise: 1.0,
+            r_gps_pos: 61.05,
+            r_gps_vel: 0.07197,
+            r_baro: 0.1,
+            r_mag: 1.0,
+        }
+    }
+
+    fn make_filter() -> RocketEsKf {
+        RocketEsKf::new(101325.0, 0.0, 45.0, default_tuning())
+    }
+
+    #[test]
+    fn test_filter_initialization() {
+        let filter = make_filter();
+        assert_eq!(filter.state.position, V3::zeros());
+        assert_eq!(filter.state.velocity, V3::zeros());
+    }
+
+    #[test]
+    fn test_set_home() {
+        let mut filter = make_filter();
+        filter.set_home(35.0, -106.0, 1500.0);
+        // Should not panic, home location stored
+    }
+
+    #[test]
+    fn test_predict_does_not_crash() {
+        let mut filter = make_filter();
+        let accel = Some(Vector3::new(0.0_f32, 0.0, -9.8));
+        let gyro = Some(Vector3::zeros());
+        let status = filter.predict(gyro, accel, None, 1000);
+        assert!(matches!(status, FilterStatus::Updated));
+    }
+
+    #[test]
+    fn test_update_baro_does_not_crash() {
+        let mut filter = make_filter();
+        let accel = Some(Vector3::new(0.0_f32, 0.0, -9.8));
+        filter.predict(Some(Vector3::zeros()), accel, None, 10000);
+        let status = filter.update_baro(100000.0); // ~100m altitude
+                                                   // Should not crash; status depends on internal filter state
+        let _ = status;
+    }
+
+    #[test]
+    fn test_update_mag_does_not_crash() {
+        let mut filter = make_filter();
+        let accel = Some(Vector3::new(0.0_f32, 0.0, -9.8));
+        filter.predict(Some(Vector3::zeros()), accel, None, 10000);
+        let mag = Vector3::new(0.3_f32, 0.0, 0.5); // Earth's field in body frame
+        let status = filter.update_mag(mag);
+        // Could be Updated or InnovationRejected
+        assert!(matches!(
+            status,
+            FilterStatus::Updated | FilterStatus::RejectedInnovation(..)
+        ));
+    }
+
+    #[test]
+    fn test_quaternion_remains_normalized() {
+        let mut filter = make_filter();
+        let accel = Some(Vector3::new(0.0_f32, 0.0, -50.0));
+        let gyro = Some(Vector3::new(0.1, 0.05, 0.02));
+
+        // Run many predictions
+        let mut time_us: u64 = 0;
+        for _ in 0..1000 {
+            time_us += 1000; // 1ms per step
+            filter.predict(gyro, accel, None, time_us);
+        }
+
+        let q = filter.state.orientation;
+        let norm = (q.w * q.w + q.i * q.i + q.j * q.j + q.k * q.k).sqrt();
+        assert!((norm - 1.0).abs() < 1e-6, "Quaternion norm = {}", norm);
+    }
+
+    #[test]
+    fn test_skew_matrix() {
+        let v = V3::new(1.0, 2.0, 3.0);
+        let s = skew(v);
+
+        // Check cross product property: skew(v) * w = v × w
+        let w = V3::new(4.0, 5.0, 6.0);
+        let cross = v.cross(&w);
+        let skew_result = s * w;
+        assert!((cross - skew_result).norm() < 1e-10);
+    }
+
+    #[test]
+    fn test_symmetrise() {
+        let mut m = Cov15::from_element(1.0);
+        // Add some asymmetry
+        m[(0, 1)] = 2.0;
+        m[(1, 0)] = 1.5;
+
+        symmetrise(&mut m);
+
+        assert!((m[(0, 1)] - 1.75).abs() < 1e-10);
+        assert!((m[(1, 0)] - 1.75).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_geodetic_to_ned_roundtrip() {
+        let home = GeoRef {
+            lat0_rad: 35.0_f64.to_radians(),
+            lon0_rad: -106.0_f64.to_radians(),
+            alt0_m: 1500.0,
+        };
+
+        // Home location should give zero offset
+        let ned = geodetic_to_ned(35.0, -106.0, 1500.0, home);
+        assert!(ned.norm() < 1.0); // Should be approximately zero
+
+        // 1 degree north should be ~111 km
+        let ned_north = geodetic_to_ned(36.0, -106.0, 1500.0, home);
+        assert!(ned_north.x > 110000.0 && ned_north.x < 112000.0);
+    }
+
+    #[test]
+    fn test_covariance_positive_definite() {
+        let mut filter = make_filter();
+
+        // Run prediction and updates
+        let mut time_us: u64 = 0;
+        for i in 0..100 {
+            time_us += 10000;
+            let accel = Some(Vector3::new(0.0, 0.0, -20.0));
+            filter.predict(Some(Vector3::zeros()), accel, None, time_us);
+            filter.update_baro(100000.0 - (i as f32) * 10.0);
+        }
+
+        // Covariance diagonal should be positive
+        let p = filter.p_cov;
+        for i in 0..15 {
+            assert!(
+                p[(i, i)] > 0.0,
+                "Diagonal P[{},{}] = {} is not positive",
+                i,
+                i,
+                p[(i, i)]
+            );
+        }
+    }
 }

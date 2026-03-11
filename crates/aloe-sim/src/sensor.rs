@@ -2,6 +2,72 @@ use crate::sim::SimResult;
 use nalgebra::Vector3;
 use rand_distr::{Distribution, Normal}; // Assuming sim is in the same crate
 
+/// Configuration for chaos/fault injection testing
+#[derive(Debug, Clone)]
+pub struct ChaosConfig {
+    /// GPS dropout time range (start, end) in seconds - GPS returns None during this period
+    pub gps_dropout_range: Option<(f64, f64)>,
+
+    /// Accelerometer spike times with magnitude multiplier
+    /// (time, multiplier) - at specified time, accel reading is multiplied
+    pub accel_spikes: Vec<(f64, f64)>,
+
+    /// Gyro drift injection (time, drift_rate_rad_per_s)
+    /// Starting at time, adds cumulative drift to gyro readings
+    pub gyro_drift: Vec<(f64, f64)>,
+
+    /// Barometer spike times with pressure offset (Pa)
+    /// (time, pressure_offset)
+    pub baro_spikes: Vec<(f64, f64)>,
+
+    /// Magnetometer interference times with field offset (Gauss)
+    /// (time, offset_vector)
+    pub mag_interference: Vec<(f64, Vector3<f64>)>,
+
+    /// Random fault probability per sample (0.0 = never, 1.0 = always)
+    /// When triggered, sensor returns None for that sample
+    pub random_fault_prob: f64,
+}
+
+impl Default for ChaosConfig {
+    fn default() -> Self {
+        Self {
+            gps_dropout_range: None,
+            accel_spikes: vec![],
+            gyro_drift: vec![],
+            baro_spikes: vec![],
+            mag_interference: vec![],
+            random_fault_prob: 0.0,
+        }
+    }
+}
+
+impl ChaosConfig {
+    /// Create a config with GPS dropout during ascent
+    pub fn with_gps_dropout(start: f64, end: f64) -> Self {
+        Self {
+            gps_dropout_range: Some((start, end)),
+            ..Default::default()
+        }
+    }
+
+    /// Create a config with gyro drift starting at a given time
+    pub fn with_gyro_drift(start_time: f64, drift_rate: f64) -> Self {
+        Self {
+            gyro_drift: vec![(start_time, drift_rate)],
+            ..Default::default()
+        }
+    }
+
+    /// Create a config with random sensor faults
+    pub fn with_random_faults(probability: f64) -> Self {
+        Self {
+            random_fault_prob: probability,
+            ..Default::default()
+        }
+    }
+}
+
 pub struct SensorConfig {
     pub noise_scale: f64,
     pub accel_noise_std: f64,   // m/s^2
@@ -27,6 +93,9 @@ pub struct SensorConfig {
     // Saturation limits (realistic sensor ranges)
     pub accel_saturation: f64, // m/s² (e.g., 200.0 for BMI088)
     pub gyro_saturation: f64,  // rad/s (e.g., 34.9 for 2000 deg/s)
+
+    /// Chaos/fault injection configuration
+    pub chaos: ChaosConfig,
 }
 
 impl Default for SensorConfig {
@@ -49,6 +118,7 @@ impl Default for SensorConfig {
             gps_enabled: true,
             accel_saturation: 200.0, // BMI088: ±200 m/s² (~20g)
             gyro_saturation: 34.9,   // BMI088: 2000 deg/s = 34.9 rad/s
+            chaos: ChaosConfig::default(),
         }
     }
 }
@@ -85,59 +155,115 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
     let d_gps_p = Normal::new(0.0, cfg.noise_scale * cfg.gps_pos_noise_std).unwrap();
     let d_gps_v = Normal::new(0.0, cfg.noise_scale * cfg.gps_vel_noise_std).unwrap();
 
+    // Distribution for random faults
+    let d_uniform = rand_distr::Uniform::new(0.0, 1.0).unwrap();
+
     // Constant Field Definitions (NED)
     // Example: ~0.5 Gauss, dipping down (Northern hemisphere)
     let mag_field_ned = Vector3::new(0.25, 0.0, 0.45);
 
+    // Track accumulated gyro drift
+    let mut accumulated_gyro_drift: Vector3<f64> = Vector3::zeros();
+
     for i in 0..n {
+        let t = sim.time[i];
+
+        // Update accumulated gyro drift based on chaos config
+        for (drift_start, drift_rate) in &cfg.chaos.gyro_drift {
+            if t >= *drift_start {
+                // Add drift at each timestep (drift_rate is rad/s per axis)
+                accumulated_gyro_drift.x += drift_rate * 0.001; // Assuming 1ms timestep
+                accumulated_gyro_drift.y += drift_rate * 0.001;
+                accumulated_gyro_drift.z += drift_rate * 0.001;
+            }
+        }
+
+        // Check for random fault injection
+        let random_fault = if cfg.chaos.random_fault_prob > 0.0 {
+            d_uniform.sample(&mut rng) < cfg.chaos.random_fault_prob
+        } else {
+            false
+        };
+
         // 1. IMU (Accelerometer)
-        if cfg.accel_enabled {
+        if cfg.accel_enabled && !random_fault {
             let proper_accel_true = sim.accel_body[i];
 
-            let ax = proper_accel_true.x + cfg.accel_bias.x + d_accel.sample(&mut rng);
-            let ay = proper_accel_true.y + cfg.accel_bias.y + d_accel.sample(&mut rng);
-            let az = proper_accel_true.z + cfg.accel_bias.z + d_accel.sample(&mut rng);
+            let mut ax = proper_accel_true.x + cfg.accel_bias.x + d_accel.sample(&mut rng);
+            let mut ay = proper_accel_true.y + cfg.accel_bias.y + d_accel.sample(&mut rng);
+            let mut az = proper_accel_true.z + cfg.accel_bias.z + d_accel.sample(&mut rng);
+
+            // Apply accel spikes from chaos config
+            for (spike_time, multiplier) in &cfg.chaos.accel_spikes {
+                if (t - spike_time).abs() < 0.01 {
+                    // Within 10ms of spike time
+                    ax *= multiplier;
+                    ay *= multiplier;
+                    az *= multiplier;
+                }
+            }
 
             // Apply saturation (clamp to sensor range)
             let ax_sat = ax.clamp(-cfg.accel_saturation, cfg.accel_saturation);
             let ay_sat = ay.clamp(-cfg.accel_saturation, cfg.accel_saturation);
             let az_sat = az.clamp(-cfg.accel_saturation, cfg.accel_saturation);
 
-            data.accel_meas.push(Some(Vector3::new(ax_sat, ay_sat, az_sat)));
+            data.accel_meas
+                .push(Some(Vector3::new(ax_sat, ay_sat, az_sat)));
         } else {
             data.accel_meas.push(None);
         }
 
         // 2. Gyroscope
-        if cfg.gyro_enabled {
-            let gx = sim.ang_vel[i].x + cfg.gyro_bias.x + d_gyro.sample(&mut rng);
-            let gy = sim.ang_vel[i].y + cfg.gyro_bias.y + d_gyro.sample(&mut rng);
-            let gz = sim.ang_vel[i].z + cfg.gyro_bias.z + d_gyro.sample(&mut rng);
+        if cfg.gyro_enabled && !random_fault {
+            let gx: f64 = sim.ang_vel[i].x
+                + cfg.gyro_bias.x
+                + d_gyro.sample(&mut rng)
+                + accumulated_gyro_drift.x;
+            let gy: f64 = sim.ang_vel[i].y
+                + cfg.gyro_bias.y
+                + d_gyro.sample(&mut rng)
+                + accumulated_gyro_drift.y;
+            let gz: f64 = sim.ang_vel[i].z
+                + cfg.gyro_bias.z
+                + d_gyro.sample(&mut rng)
+                + accumulated_gyro_drift.z;
 
             // Apply saturation (clamp to sensor range)
             let gx_sat = gx.clamp(-cfg.gyro_saturation, cfg.gyro_saturation);
             let gy_sat = gy.clamp(-cfg.gyro_saturation, cfg.gyro_saturation);
             let gz_sat = gz.clamp(-cfg.gyro_saturation, cfg.gyro_saturation);
 
-            data.gyro_meas.push(Some(Vector3::new(gx_sat, gy_sat, gz_sat)));
+            data.gyro_meas
+                .push(Some(Vector3::new(gx_sat, gy_sat, gz_sat)));
         } else {
             data.gyro_meas.push(None);
         }
 
         // 3. Magnetometer
-        if cfg.mag_enabled {
+        if cfg.mag_enabled && !random_fault {
             let mag_body = sim.orientation[i].inverse_transform_vector(&mag_field_ned);
 
-            let mx = mag_body.x + d_mag.sample(&mut rng);
-            let my = mag_body.y + d_mag.sample(&mut rng);
-            let mz = mag_body.z + d_mag.sample(&mut rng);
+            let mut mx = mag_body.x + d_mag.sample(&mut rng);
+            let mut my = mag_body.y + d_mag.sample(&mut rng);
+            let mut mz = mag_body.z + d_mag.sample(&mut rng);
+
+            // Apply magnetometer interference from chaos config
+            for (interference_time, offset) in &cfg.chaos.mag_interference {
+                if t >= *interference_time {
+                    mx += offset.x;
+                    my += offset.y;
+                    mz += offset.z;
+                }
+            }
+
             data.mag_meas.push(Some(Vector3::new(mx, my, mz)));
         } else {
             data.mag_meas.push(None);
         }
 
         // 4. Barometer (Pressure)
-        if cfg.baro_enabled {
+        if cfg.baro_enabled && !random_fault {
             let true_alt = -sim.pos[i].z;
             let p0 = 101325.0; // Pa
             let h_scale = 8500.0; // m
@@ -166,14 +292,30 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
             let velocity_noise_factor = 1.0 + (v_mag / 100.0).min(5.0);
             let noise_component = d_baro.sample(&mut rng) * velocity_noise_factor;
 
-            let meas_pressure = static_pressure + pressure_error + noise_component;
+            let mut meas_pressure = static_pressure + pressure_error + noise_component;
+
+            // Apply barometer spikes from chaos config
+            for (spike_time, pressure_offset) in &cfg.chaos.baro_spikes {
+                if (t - spike_time).abs() < 0.1 {
+                    // Within 100ms of spike time
+                    meas_pressure += pressure_offset;
+                }
+            }
+
             data.baro_pressure.push(Some(meas_pressure));
         } else {
             data.baro_pressure.push(None);
         }
 
         // 5. GPS
-        if cfg.gps_enabled {
+        // Check for GPS dropout from chaos config
+        let gps_in_dropout = cfg
+            .chaos
+            .gps_dropout_range
+            .map(|(start, end)| t >= start && t <= end)
+            .unwrap_or(false);
+
+        if cfg.gps_enabled && !random_fault && !gps_in_dropout {
             let px = sim.pos[i].x + d_gps_p.sample(&mut rng);
             let py = sim.pos[i].y + d_gps_p.sample(&mut rng);
             let pz = sim.pos[i].z + d_gps_p.sample(&mut rng); // GPS Altitude usually noisy

@@ -16,6 +16,7 @@ std = ["nalgebra/std"]
 nalgebra.workspace = true
 libm.workspace = true
 zerocopy = { version = "0.8.39", features = ["derive"] }
+katex-doc.workspace = true
 
 [dev-dependencies]
 aloe-core = { path = ".", features = ["std"] }

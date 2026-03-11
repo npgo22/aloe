@@ -11,6 +11,12 @@ pub struct FilterResult {
     pub position: Vec<Vector3<f64>>,
     pub velocity: Vec<Vector3<f64>>,
     pub orientation_euler: Vec<Vector3<f64>>,
+    /// Time when ESKF detected transition to Ascent state (None if not detected)
+    pub ascent_time: Option<f64>,
+    /// Time when ESKF detected transition to Coast state (None if not detected)
+    pub coast_time: Option<f64>,
+    /// Time when ESKF detected transition to Descent state (None if not detected)
+    pub descent_time: Option<f64>,
 }
 
 /// Filter configuration with per-stage tuning.
@@ -158,7 +164,7 @@ pub fn run_filter(
         config.mag_dip_deg as f32,
         tuning,
     );
-    eskf.set_home_location(
+    eskf.set_home(
         config.home_lat_deg as f32,
         config.home_lon_deg as f32,
         config.home_alt_m as f32,
@@ -173,6 +179,12 @@ pub fn run_filter(
     let mut vel_out = Vec::new();
     let mut att_euler_out = Vec::new();
 
+    // Track state transitions
+    let mut ascent_time: Option<f64> = None;
+    let mut coast_time: Option<f64> = None;
+    let mut descent_time: Option<f64> = None;
+    let mut previous_state = aloe_core::state_machine::FlightState::Pad;
+
     let n = sensor_data.time.len();
 
     for i in 0..n {
@@ -183,10 +195,10 @@ pub fn run_filter(
         // PREDICT (IMU)
         // -------------------------------------------------------------------
         // Map sensor readings to Option<f32> types
-        let accel_opt = sensor_data.accel_meas[i]
-            .map(|a| Vector3::new(a.x as f32, a.y as f32, a.z as f32));
-        let gyro_opt = sensor_data.gyro_meas[i]
-            .map(|g| Vector3::new(g.x as f32, g.y as f32, g.z as f32));
+        let accel_opt =
+            sensor_data.accel_meas[i].map(|a| Vector3::new(a.x as f32, a.y as f32, a.z as f32));
+        let gyro_opt =
+            sensor_data.gyro_meas[i].map(|g| Vector3::new(g.x as f32, g.y as f32, g.z as f32));
 
         // Pass Option types to predict - filter will handle missing sensors
         eskf.predict(gyro_opt, accel_opt, accel_opt, t_us);
@@ -207,9 +219,7 @@ pub fn run_filter(
         }
 
         // GPS - only update if sensor enabled
-        if let (Some(gps_pos), Some(gps_vel)) =
-            (sensor_data.gps_pos[i], sensor_data.gps_vel[i])
-        {
+        if let (Some(gps_pos), Some(gps_vel)) = (sensor_data.gps_pos[i], sensor_data.gps_vel[i]) {
             // Approx conversion: 1 deg lat ~ 111,111 m
             let lat = gps_pos.x / 111111.0;
             let lon = gps_pos.y / (111111.0 * 1.0_f64.cos());
@@ -260,6 +270,30 @@ pub fn run_filter(
             accel_down,
         };
         let flight_state = state_machine.update(input, dt as f32);
+
+        // Detect state transitions and record times
+        if flight_state != previous_state {
+            match flight_state {
+                aloe_core::state_machine::FlightState::Ascent => {
+                    if ascent_time.is_none() {
+                        ascent_time = Some(t);
+                    }
+                }
+                aloe_core::state_machine::FlightState::Coast => {
+                    if coast_time.is_none() {
+                        coast_time = Some(t);
+                    }
+                }
+                aloe_core::state_machine::FlightState::Descent => {
+                    if descent_time.is_none() {
+                        descent_time = Some(t);
+                    }
+                }
+                _ => {}
+            }
+            previous_state = flight_state;
+        }
+
         let tuning_stage = match flight_state {
             aloe_core::state_machine::FlightState::Pad => 0,
             aloe_core::state_machine::FlightState::Ascent => 1,
@@ -294,10 +328,75 @@ pub fn run_filter(
         position: pos_out,
         velocity: vel_out,
         orientation_euler: att_euler_out,
+        ascent_time,
+        coast_time,
+        descent_time,
     }
 }
 
-/// Legacy function for backward compatibility.
-pub fn run_filter_default(sim_result: &SimResult, sensor_data: &SensorData) -> FilterResult {
-    run_filter(sim_result, sensor_data, &FilterConfig::default())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sensor::{generate_sensor_data, SensorConfig};
+    use crate::sim::{simulate_6dof, RocketParams};
+
+    #[test]
+    fn test_filter_state_transitions() {
+        // Run simulation
+        let params = RocketParams::default();
+        let sim_result = simulate_6dof(&params);
+
+        // Generate sensor data
+        let sensor_config = SensorConfig::default();
+        let sensor_data = generate_sensor_data(&sim_result, &sensor_config);
+
+        // Run filter
+        let filter_config = FilterConfig::default();
+        let filter_result = run_filter(&sim_result, &sensor_data, &filter_config);
+
+        // Both sim and filter should detect all transitions
+        assert!(sim_result.ascent_time.is_some(), "Sim should detect ascent");
+        assert!(sim_result.coast_time.is_some(), "Sim should detect coast");
+        assert!(
+            sim_result.descent_time.is_some(),
+            "Sim should detect descent"
+        );
+
+        assert!(
+            filter_result.ascent_time.is_some(),
+            "Filter should detect ascent"
+        );
+        assert!(
+            filter_result.coast_time.is_some(),
+            "Filter should detect coast"
+        );
+        assert!(
+            filter_result.descent_time.is_some(),
+            "Filter should detect descent"
+        );
+
+        // The test verifies that state transitions are detected and tracked
+        // The actual delay values are expected to differ due to state machine heuristics
+        // and sensor noise - this is the data the user wants to visualize!
+
+        // Just verify transitions occur in correct order
+        assert!(
+            filter_result.ascent_time.unwrap() < filter_result.coast_time.unwrap(),
+            "Filter: Ascent before coast"
+        );
+        assert!(
+            filter_result.coast_time.unwrap() < filter_result.descent_time.unwrap(),
+            "Filter: Coast before descent"
+        );
+
+        // Transitions should occur in correct order
+        assert!(
+            filter_result.ascent_time.unwrap() < filter_result.coast_time.unwrap(),
+            "Ascent before coast"
+        );
+        assert!(
+            filter_result.coast_time.unwrap() < filter_result.descent_time.unwrap(),
+            "Coast before descent"
+        );
+    }
 }
