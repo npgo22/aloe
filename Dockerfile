@@ -3,14 +3,21 @@ FROM rust:1.94-slim AS builder
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y curl ca-certificates gnupg cmake g++ make pkg-config && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
+
 # Copy source
 COPY . .
+
+# Build frontend for embedding
+RUN npm --prefix frontend ci
+RUN npm --prefix frontend run build:embedded
 
 # Build release binary
 RUN cargo build --release
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 # Install ca-certificates for HTTPS if needed
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*

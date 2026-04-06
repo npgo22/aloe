@@ -247,7 +247,9 @@
 //! - Crassidis & Junkins (2011). "Optimal Estimation of Dynamic Systems"
 
 use crate::lut_data::{cos_lut, pressure_ratio_to_altitude_lut, sin_lut};
-use nalgebra::{Matrix1, Matrix3, SMatrix, SVector, Unit, UnitQuaternion, Vector1, Vector3};
+use nalgebra::{
+    Matrix1, Matrix2, Matrix3, SMatrix, SVector, Unit, UnitQuaternion, Vector1, Vector2, Vector3,
+};
 
 // ---------------------------------------------------------------------------
 // Scalar & dimension aliases
@@ -283,6 +285,7 @@ const GPS_BARO_INHIBIT_US: u64 = 2_000_000; // 2 s
 /// Innovation gate (σ).  Measurements with normalised innovation > this are
 /// rejected to protect against outliers.
 const GATE_SIGMA: Scalar = 5.0;
+const VERTICAL_GATE_SIGMA: Scalar = 20.0;
 
 // ---------------------------------------------------------------------------
 // Flight-stage tuning table
@@ -677,16 +680,17 @@ impl RocketEsKf {
         // Deweight baro while GPS data is fresh.
         let r_val = match (self.last_gps_time_us, self.last_time_us) {
             (Some(t_gps), Some(t_now)) if t_now.saturating_sub(t_gps) < GPS_BARO_INHIBIT_US => {
-                // GPS active: inflate baro variance by 100× so GPS dominates
-                // the vertical channel without fully discarding baro.
-                self.tuning.r_baro * 100.0
+                // GPS active: inflate baro variance so GPS dominates, but do not
+                // discard baro entirely. Keeping some baro authority helps avoid
+                // vertical drift when sparse/noisy GPS fixes are partially gated.
+                self.tuning.r_baro * 10.0
             }
             _ => self.tuning.r_baro,
         };
 
         let inn = Vector1::new(z_meas - self.state.position.z);
         let r = Matrix1::new(r_val);
-        self.apply_update(&h, &inn, &r)
+        self.apply_update_with_gate(&h, &inn, &r, VERTICAL_GATE_SIGMA)
     }
 
     /// Magnetometer update.
@@ -734,27 +738,51 @@ impl RocketEsKf {
         let pos_meas = geodetic_to_ned(lat_deg, lon_deg, alt_m, home);
         let vel_meas = f32v3_to_f64(vel_ned);
 
-        let mut inn = SVector::<Scalar, 6>::zeros();
-        inn.fixed_rows_mut::<3>(0)
-            .copy_from(&(pos_meas - snap.position));
-        inn.fixed_rows_mut::<3>(3)
-            .copy_from(&(vel_meas - snap.velocity));
+        let pos_inn = pos_meas - snap.position;
+        let vel_inn = vel_meas - snap.velocity;
 
-        let mut h = SMatrix::<Scalar, 6, 15>::zeros();
-        h.fixed_view_mut::<3, 3>(0, 0).fill_diagonal(1.0);
-        h.fixed_view_mut::<3, 3>(3, 3).fill_diagonal(1.0);
+        let mut h_pos_xy = SMatrix::<Scalar, 2, 15>::zeros();
+        h_pos_xy[(0, 0)] = 1.0;
+        h_pos_xy[(1, 1)] = 1.0;
 
-        let mut r = SMatrix::<Scalar, 6, 6>::zeros();
-        r.fixed_view_mut::<3, 3>(0, 0)
-            .fill_diagonal(self.tuning.r_gps_pos);
-        r.fixed_view_mut::<3, 3>(3, 3)
-            .fill_diagonal(self.tuning.r_gps_vel);
+        let mut h_pos_z = SMatrix::<Scalar, 1, 15>::zeros();
+        h_pos_z[(0, 2)] = 1.0;
 
-        let result = self.apply_update(&h, &inn, &r);
-        if result == FilterStatus::Updated {
-            self.last_gps_time_us = self.last_time_us;
-        }
-        result
+        let mut h_vel_xy = SMatrix::<Scalar, 2, 15>::zeros();
+        h_vel_xy[(0, 3)] = 1.0;
+        h_vel_xy[(1, 4)] = 1.0;
+
+        let mut h_vel_z = SMatrix::<Scalar, 1, 15>::zeros();
+        h_vel_z[(0, 5)] = 1.0;
+
+        let r_pos_xy = Matrix2::identity() * self.tuning.r_gps_pos;
+        let r_pos_z = Matrix1::new(self.tuning.r_gps_pos);
+        let r_vel_xy = Matrix2::identity() * self.tuning.r_gps_vel;
+        let r_vel_z = Matrix1::new(self.tuning.r_gps_vel);
+
+        // Keep baro deweighted while GPS measurements are actively arriving, even if
+        // a particular GPS update gets innovation-gated. Otherwise a rejected GPS
+        // fix can let the barometer immediately retake the vertical channel.
+        self.last_gps_time_us = self.last_time_us;
+
+        let pos_xy_result =
+            self.apply_update(&h_pos_xy, &Vector2::new(pos_inn.x, pos_inn.y), &r_pos_xy);
+        let pos_z_result = self.apply_update_with_gate(
+            &h_pos_z,
+            &Vector1::new(pos_inn.z),
+            &r_pos_z,
+            VERTICAL_GATE_SIGMA,
+        );
+        let vel_xy_result =
+            self.apply_update(&h_vel_xy, &Vector2::new(vel_inn.x, vel_inn.y), &r_vel_xy);
+        let vel_z_result = self.apply_update_with_gate(
+            &h_vel_z,
+            &Vector1::new(vel_inn.z),
+            &r_vel_z,
+            VERTICAL_GATE_SIGMA,
+        );
+
+        Self::combine_update_results(&[pos_xy_result, pos_z_result, vel_xy_result, vel_z_result])
     }
 }
 
@@ -771,6 +799,16 @@ impl RocketEsKf {
         inn: &SVector<Scalar, D>,
         r: &SMatrix<Scalar, D, D>,
     ) -> FilterStatus {
+        self.apply_update_with_gate(h, inn, r, GATE_SIGMA)
+    }
+
+    fn apply_update_with_gate<const D: usize>(
+        &mut self,
+        h: &SMatrix<Scalar, D, 15>,
+        inn: &SVector<Scalar, D>,
+        r: &SMatrix<Scalar, D, D>,
+        gate_sigma: Scalar,
+    ) -> FilterStatus {
         // Innovation covariance  S = H P Hᵀ + R
         let s = h * self.p_cov * h.transpose() + r;
 
@@ -779,7 +817,7 @@ impl RocketEsKf {
         // A proper χ² gate would use  innᵀ S⁻¹ inn  but that requires an
         // inversion we're about to do anyway — this order avoids recomputing.
         let s_scale = s.diagonal().map(|v| v.abs().sqrt()).norm();
-        if s_scale > 1e-10 && inn.norm() / s_scale > GATE_SIGMA {
+        if s_scale > 1e-10 && inn.norm() / s_scale > gate_sigma {
             return FilterStatus::RejectedInnovation(inn.norm() / s_scale);
         }
 
@@ -811,6 +849,34 @@ impl RocketEsKf {
         symmetrise(&mut self.p_cov);
 
         FilterStatus::Updated
+    }
+
+    fn combine_update_results(results: &[FilterStatus]) -> FilterStatus {
+        let mut rejected_sigma: Option<Scalar> = None;
+
+        for result in results {
+            match result {
+                FilterStatus::Updated => return FilterStatus::Updated,
+                FilterStatus::RejectedInnovation(sigma) => {
+                    rejected_sigma =
+                        Some(rejected_sigma.map_or(*sigma, |current| current.max(*sigma)));
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(sigma) = rejected_sigma {
+            return FilterStatus::RejectedInnovation(sigma);
+        }
+
+        if results
+            .iter()
+            .any(|result| matches!(result, FilterStatus::SingularMatrix))
+        {
+            return FilterStatus::SingularMatrix;
+        }
+
+        FilterStatus::SkippedOutdated
     }
 }
 

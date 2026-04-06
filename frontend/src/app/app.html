@@ -1,0 +1,248 @@
+<div class="shell">
+  <p-message *ngIf="errorMessage()" severity="error" [text]="errorMessage() || ''" />
+
+  <main class="workspace">
+    <aside class="sidebar">
+      <section class="section-block plain-section controls-header">
+        <div class="section-heading">Aloe Rocket Simulator</div>
+        <div class="controls-toolbar">
+          <div class="run-indicator" [class.is-active]="showProcessingIndicator()">
+            <span class="indicator-dot"></span>
+            <span>{{ processingLabel() }}</span>
+          </div>
+          <div class="unit-toggle" aria-label="Unit system">
+            <button
+              *ngFor="let option of unitOptions"
+              type="button"
+              class="unit-toggle-button"
+              [class.is-active]="units() === option.value"
+              (click)="setUnits(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="section-block plain-section">
+        <div class="section-heading">Quick Presets</div>
+        <div class="preset-grid">
+          <button class="preset-button" *ngFor="let preset of presets" type="button" (click)="applyPreset(preset.key)">
+            <span>{{ preset.label }}</span>
+            <span *ngIf="preset.note" class="preset-note">{{ preset.note }}</span>
+          </button>
+        </div>
+      </section>
+
+      <details class="section-block collapsible" open>
+        <summary class="section-summary">
+          <span class="section-heading">Rocket Configuration</span>
+        </summary>
+        <div class="section-body" [formGroup]="form.controls.rocket">
+          <div class="subsection" *ngFor="let group of rocketGroups">
+            <div class="subsection-heading">{{ group.title }}</div>
+            <div class="field-grid">
+              <div class="field" *ngFor="let field of group.fields">
+                <label [for]="field.key">{{ labelForField(field.key) }}</label>
+                 <p-inputnumber [inputId]="field.key" [formControlName]="field.key" [useGrouping]="false" mode="decimal" [step]="field.step" [min]="field.min" [minFractionDigits]="field.minFractionDigits" [maxFractionDigits]="field.maxFractionDigits" inputStyleClass="number-input" [inputStyle]="numberInputStyle"></p-inputnumber>
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <details class="section-block collapsible">
+        <summary class="section-summary">
+          <span class="section-heading">Environment</span>
+        </summary>
+        <div class="section-body" [formGroup]="form.controls.environment">
+            <div class="field-grid">
+              <div class="field" *ngFor="let field of environmentFields">
+              <label [for]="field.key">{{ labelForField(field.key) }}</label>
+               <p-inputnumber [inputId]="field.key" [formControlName]="field.key" [useGrouping]="false" mode="decimal" [step]="field.step" [min]="field.min" [minFractionDigits]="field.minFractionDigits" [maxFractionDigits]="field.maxFractionDigits" inputStyleClass="number-input" [inputStyle]="numberInputStyle"></p-inputnumber>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <details class="section-block collapsible" open>
+        <summary class="section-summary">
+          <span class="section-heading">Sensors</span>
+        </summary>
+        <div class="section-body" [formGroup]="form.controls.sensors">
+          <div class="subsection">
+            <div class="subsection-heading">Enabled Sensors</div>
+            <div class="toggle-grid">
+              <label *ngFor="let field of sensorToggleFields" class="toggle-item">
+                <p-checkbox [binary]="true" [formControlName]="field.key"></p-checkbox>
+                <span>{{ field.label }}</span>
+              </label>
+            </div>
+          </div>
+          <div class="subsection" *ngFor="let group of sensorValueGroups">
+            <div class="subsection-heading">{{ group.title }}</div>
+            <div class="field-grid">
+              <div class="field" *ngFor="let field of group.fields">
+                <label [for]="field.key">{{ labelForField(field.key) }}</label>
+                 <p-inputnumber [inputId]="field.key" [formControlName]="field.key" [useGrouping]="false" mode="decimal" [step]="field.step" [min]="field.min" [minFractionDigits]="field.minFractionDigits" [maxFractionDigits]="field.maxFractionDigits" inputStyleClass="number-input" [inputStyle]="numberInputStyle"></p-inputnumber>
+              </div>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <details class="section-block collapsible">
+        <summary class="section-summary">
+          <span class="section-heading">Filter</span>
+        </summary>
+        <div class="section-body">
+          <div class="subsection" [formGroup]="form.controls.options">
+            <div class="subsection-heading">Options</div>
+            <div class="toggle-grid single-col">
+              <label class="toggle-item" *ngFor="let field of optionToggleFields">
+                <p-checkbox [binary]="true" [formControlName]="field.key"></p-checkbox>
+                <span>{{ field.label }}</span>
+              </label>
+            </div>
+          </div>
+          <div class="subsection" [formGroup]="form.controls.filter">
+            <div class="subsection-heading">Reference Inputs</div>
+            <div class="field-grid">
+              <div class="field" *ngFor="let field of filterFields">
+                <label [for]="field.key">{{ labelForField(field.key) }}</label>
+                 <p-inputnumber [inputId]="field.key" [formControlName]="field.key" [useGrouping]="false" mode="decimal" [step]="field.step" [min]="field.min" [minFractionDigits]="field.minFractionDigits" [maxFractionDigits]="field.maxFractionDigits" inputStyleClass="number-input" [inputStyle]="numberInputStyle"></p-inputnumber>
+              </div>
+            </div>
+          </div>
+          <div class="subsection" [formGroup]="form.controls.filter">
+            <div class="subsection-heading">State Detection</div>
+            <div class="field-grid">
+              <div class="field" *ngFor="let field of stateMachineFields">
+                <label [for]="field.key">{{ labelForField(field.key) }}</label>
+                 <p-inputnumber [inputId]="field.key" [formControlName]="field.key" [useGrouping]="false" mode="decimal" [step]="field.step" [min]="field.min" [minFractionDigits]="field.minFractionDigits" [maxFractionDigits]="field.maxFractionDigits" inputStyleClass="number-input" [inputStyle]="numberInputStyle"></p-inputnumber>
+              </div>
+            </div>
+          </div>
+          <div class="subsection tuning-block">
+            <div class="subsection-heading">Per-Stage Tuning</div>
+            <div class="tuning-stack">
+              <details class="tuning-stage" *ngFor="let stage of stageTuningValues(); let stageIndex = index" [attr.open]="stageIndex === 0 ? true : null">
+                <summary class="tuning-stage-summary">
+                  <span class="tuning-stage-title">{{ stageLabels[stageIndex] }}</span>
+                </summary>
+                <div class="field-grid compact tuning-stage-body">
+                  <div class="field" *ngFor="let field of tuningFields">
+                    <label [for]="field.key + '-' + stageIndex">{{ labelForTuningField(field.key) }}</label>
+                    <p-inputnumber
+                      [inputId]="field.key + '-' + stageIndex"
+                       [ngModel]="stage[field.key]"
+                       (ngModelChange)="setStageTuningValue(stageIndex, field.key, $event)"
+                       [ngModelOptions]="{ standalone: true }"
+                       [useGrouping]="false"
+                       mode="decimal"
+                       inputStyleClass="number-input"
+                       [inputStyle]="numberInputStyle"
+                     ></p-inputnumber>
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+        </div>
+      </details>
+    </aside>
+
+    <section class="content">
+      <section class="analysis-section hero-section">
+        <div class="analysis-header">
+          <div>
+            <div class="section-heading">Flight Path</div>
+            <div class="section-note">truth, ESKF, quantized path</div>
+          </div>
+        </div>
+        <section class="plot-block plot-surface hero-block">
+          <div id="chart-trajectory" class="chart chart-hero"></div>
+        </section>
+      </section>
+
+      <section class="analysis-section">
+        <div class="analysis-header">
+          <div>
+            <div class="section-heading">Flight Overview</div>
+            <div class="section-note">core trajectory and mass state</div>
+          </div>
+        </div>
+        <div class="plot-grid overview-grid">
+          <div class="plot-block plot-surface"><div id="chart-altitude" class="chart"></div></div>
+          <div class="plot-block plot-surface"><div id="chart-velocity" class="chart"></div></div>
+          <div class="plot-block plot-surface"><div id="chart-acceleration" class="chart"></div></div>
+          <div class="plot-block plot-surface"><div id="chart-force" class="chart"></div></div>
+          <div class="plot-block plot-surface full-width"><div id="chart-mass" class="chart chart-short"></div></div>
+        </div>
+      </section>
+
+      <section class="analysis-section">
+        <div class="analysis-header">
+          <div>
+            <div class="section-heading">Sensors</div>
+            <div class="section-note">raw measurement channels and derived pressure altitude</div>
+          </div>
+        </div>
+        <div class="plot-grid sensor-grid">
+          <div class="plot-block plot-surface"><div id="chart-accel" class="chart"></div></div>
+          <div class="plot-block plot-surface"><div id="chart-gyro" class="chart"></div></div>
+          <div class="plot-block plot-surface"><div id="chart-mag" class="chart"></div></div>
+          <div *ngIf="hasAdxlCharts()" class="plot-block plot-surface"><div id="chart-adxl-yz" class="chart"></div></div>
+          <div *ngIf="hasAdxlCharts()" class="plot-block plot-surface"><div id="chart-adxl-x" class="chart"></div></div>
+          <div class="plot-block plot-surface"><div id="chart-baro-pressure" class="chart"></div></div>
+          <div class="plot-block plot-surface"><div id="chart-baro-altitude" class="chart"></div></div>
+          <div class="plot-block plot-surface"><div id="chart-gps-position" class="chart"></div></div>
+          <div class="plot-block plot-surface full-width"><div id="chart-gps-velocity" class="chart"></div></div>
+        </div>
+      </section>
+
+      <section class="analysis-section">
+        <div class="analysis-header">
+          <div>
+            <div class="section-heading">Filter Errors</div>
+            <div class="section-note">position, velocity, and altitude residuals</div>
+          </div>
+        </div>
+        <div class="plot-grid error-grid">
+          <div class="plot-block plot-surface"><div id="chart-error-position" class="chart"></div></div>
+          <div class="plot-block plot-surface"><div id="chart-error-velocity" class="chart"></div></div>
+          <div class="plot-block plot-surface full-width"><div id="chart-error-altitude" class="chart chart-short"></div></div>
+        </div>
+        <section class="table-block plot-surface stats-table-block">
+          <div class="section-heading">Filter Error Statistics</div>
+          <p-table [value]="statRows()" [tableStyle]="{ 'min-width': '64rem' }">
+            <ng-template #header>
+              <tr>
+                <th>Category</th>
+                <th>Metric</th>
+                <th>Mean</th>
+                <th>Std</th>
+                <th>MAE</th>
+                <th>RMSE</th>
+                <th>P95</th>
+                <th>N</th>
+              </tr>
+            </ng-template>
+            <ng-template #body let-row>
+              <tr>
+                <td>{{ row.category }}</td>
+                <td>{{ row.label }}</td>
+                <td>{{ formatStatValue(row, row.stats.mean) }}</td>
+                <td>{{ formatStatValue(row, row.stats.std) }}</td>
+                <td>{{ formatStatValue(row, row.stats.mae) }}</td>
+                <td>{{ formatStatValue(row, row.stats.rmse) }}</td>
+                <td>{{ formatStatValue(row, row.stats.p95) }}</td>
+                <td>{{ row.stats.n }}</td>
+              </tr>
+            </ng-template>
+          </p-table>
+        </section>
+      </section>
+    </section>
+  </main>
+</div>

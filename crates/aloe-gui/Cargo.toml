@@ -14,9 +14,8 @@ aloe-core = { path = "../aloe-core" }
 aloe-sim = { path = "../aloe-sim" }
 
 # Server dependencies
-axum = "0.8"
+axum = { version = "0.8", features = ["json"] }
 tokio = { workspace = true }
-tower-http = { version = "0.6", features = ["fs"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-opentelemetry = { workspace = true }
@@ -25,6 +24,8 @@ opentelemetry_sdk = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 serde_json.workspace = true
 log = "0.4.29"
+rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+mime_guess = "2"
 
 [lib]
 crate-type = ["rlib"]

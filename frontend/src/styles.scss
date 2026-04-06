@@ -1,0 +1,105 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: #f8fafc;
+}
+
+.js-plotly-plot,
+.js-plotly-plot .plot-container,
+.js-plotly-plot .svg-container,
+.js-plotly-plot .gl-container {
+  height: 100% !important;
+}
+
+.js-plotly-plot .main-svg,
+.js-plotly-plot .gl-container canvas {
+  max-width: 100%;
+}
+
+.p-inputnumber-input,
+.p-inputtext,
+input.p-inputtext,
+input.number-input {
+  color: #0f172a !important;
+  -webkit-text-fill-color: #0f172a !important;
+  background: #ffffff !important;
+  caret-color: #0f172a !important;
+}
+
+.p-inputtext,
+.p-inputnumber-input {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid #d7dee7;
+  border-radius: 0.2rem;
+  padding: 0.48rem 0.6rem;
+  font-size: 0.82rem;
+  line-height: 1.2;
+  font-weight: 600;
+}
+
+.number-input {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.p-inputnumber-input:enabled:hover,
+.p-inputnumber-input:enabled:focus,
+.p-inputtext:enabled:hover,
+.p-inputtext:enabled:focus {
+  background: #ffffff;
+  border-color: #94a3b8;
+  box-shadow: none;
+  outline: none;
+}
+
+.p-inputnumber,
+.p-inputnumber .p-inputtext,
+.p-inputnumber-button {
+  background: transparent;
+}
+
+.p-inputnumber-button {
+  border: 0;
+  color: #64748b;
+}
+
+.p-checkbox-box {
+  background: transparent;
+  border-color: #94a3b8;
+  border-radius: 0.15rem;
+}
+
+.p-checkbox-checked .p-checkbox-box {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.p-message {
+  margin-bottom: 0.75rem;
+}
+
+.p-message.p-message-error {
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  color: #9a3412;
+}
+
+.p-datatable-table th {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+  color: #475569;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.p-datatable-table td {
+  background: #ffffff;
+  border-color: #f1f5f9;
+  color: #0f172a;
+  font-size: 0.8rem;
+}

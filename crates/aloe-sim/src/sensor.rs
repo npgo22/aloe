@@ -1,5 +1,6 @@
 use crate::sim::SimResult;
 use nalgebra::Vector3;
+use rand::{rngs::StdRng, SeedableRng};
 use rand_distr::{Distribution, Normal}; // Assuming sim is in the same crate
 
 /// Configuration for chaos/fault injection testing
@@ -90,6 +91,14 @@ pub struct SensorConfig {
     pub baro_enabled: bool,
     pub gps_enabled: bool,
 
+    // Sample rates (Hz)
+    pub bmi088_accel_rate_hz: f64,
+    pub bmi088_gyro_rate_hz: f64,
+    pub adxl375_rate_hz: f64,
+    pub lis3mdl_rate_hz: f64,
+    pub ms5611_rate_hz: f64,
+    pub gps_rate_hz: f64,
+
     // Saturation limits (realistic sensor ranges)
     pub accel_saturation: f64, // m/s² (e.g., 200.0 for BMI088)
     pub gyro_saturation: f64,  // rad/s (e.g., 34.9 for 2000 deg/s)
@@ -116,6 +125,12 @@ impl Default for SensorConfig {
             mag_enabled: true,
             baro_enabled: true,
             gps_enabled: true,
+            bmi088_accel_rate_hz: 1000.0,
+            bmi088_gyro_rate_hz: 1000.0,
+            adxl375_rate_hz: 3200.0,
+            lis3mdl_rate_hz: 100.0,
+            ms5611_rate_hz: 50.0,
+            gps_rate_hz: 10.0,
             accel_saturation: 200.0, // BMI088: ±200 m/s² (~20g)
             gyro_saturation: 34.9,   // BMI088: 2000 deg/s = 34.9 rad/s
             chaos: ChaosConfig::default(),
@@ -126,6 +141,8 @@ impl Default for SensorConfig {
 pub struct SensorData {
     pub time: Vec<f64>,
     pub accel_meas: Vec<Option<Vector3<f64>>>,
+    pub bmi088_accel_meas: Vec<Option<Vector3<f64>>>,
+    pub adxl375_accel_meas: Vec<Option<Vector3<f64>>>,
     pub gyro_meas: Vec<Option<Vector3<f64>>>,
     pub mag_meas: Vec<Option<Vector3<f64>>>,
     pub baro_pressure: Vec<Option<f64>>,
@@ -133,13 +150,31 @@ pub struct SensorData {
     pub gps_vel: Vec<Option<Vector3<f64>>>,
 }
 
+fn should_sample(t: f64, next_sample_time: &mut f64, rate_hz: f64) -> bool {
+    if rate_hz <= 0.0 {
+        return false;
+    }
+
+    let interval = 1.0 / rate_hz;
+    if t + 1e-9 < *next_sample_time {
+        return false;
+    }
+
+    while *next_sample_time <= t + 1e-9 {
+        *next_sample_time += interval;
+    }
+    true
+}
+
 pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
-    let mut rng = rand::rngs::ThreadRng::default();
+    let mut rng = StdRng::seed_from_u64(cfg.seed);
 
     let n = sim.time.len();
     let mut data = SensorData {
         time: sim.time.clone(),
         accel_meas: Vec::with_capacity(n),
+        bmi088_accel_meas: Vec::with_capacity(n),
+        adxl375_accel_meas: Vec::with_capacity(n),
         gyro_meas: Vec::with_capacity(n),
         mag_meas: Vec::with_capacity(n),
         baro_pressure: Vec::with_capacity(n),
@@ -164,6 +199,12 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
 
     // Track accumulated gyro drift
     let mut accumulated_gyro_drift: Vector3<f64> = Vector3::zeros();
+    let mut next_bmi088_accel_time = 0.0;
+    let mut next_bmi088_gyro_time = 0.0;
+    let mut next_adxl375_time = 0.0;
+    let mut next_lis3mdl_time = 0.0;
+    let mut next_ms5611_time = 0.0;
+    let mut next_gps_time = 0.0;
 
     for i in 0..n {
         let t = sim.time[i];
@@ -186,6 +227,8 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
         };
 
         // 1. IMU (Accelerometer)
+        let mut bmi088_sample = None;
+        let mut adxl375_sample = None;
         if cfg.accel_enabled && !random_fault {
             let proper_accel_true = sim.accel_body[i];
 
@@ -208,14 +251,23 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
             let ay_sat = ay.clamp(-cfg.accel_saturation, cfg.accel_saturation);
             let az_sat = az.clamp(-cfg.accel_saturation, cfg.accel_saturation);
 
-            data.accel_meas
-                .push(Some(Vector3::new(ax_sat, ay_sat, az_sat)));
-        } else {
-            data.accel_meas.push(None);
+            let sample = Vector3::new(ax_sat, ay_sat, az_sat);
+            if should_sample(t, &mut next_bmi088_accel_time, cfg.bmi088_accel_rate_hz) {
+                bmi088_sample = Some(sample);
+            }
+            if should_sample(t, &mut next_adxl375_time, cfg.adxl375_rate_hz) {
+                adxl375_sample = Some(sample);
+            }
         }
+        data.accel_meas.push(bmi088_sample.or(adxl375_sample));
+        data.bmi088_accel_meas.push(bmi088_sample);
+        data.adxl375_accel_meas.push(adxl375_sample);
 
         // 2. Gyroscope
-        if cfg.gyro_enabled && !random_fault {
+        if cfg.gyro_enabled
+            && !random_fault
+            && should_sample(t, &mut next_bmi088_gyro_time, cfg.bmi088_gyro_rate_hz)
+        {
             let gx: f64 = sim.ang_vel[i].x
                 + cfg.gyro_bias.x
                 + d_gyro.sample(&mut rng)
@@ -241,7 +293,10 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
         }
 
         // 3. Magnetometer
-        if cfg.mag_enabled && !random_fault {
+        if cfg.mag_enabled
+            && !random_fault
+            && should_sample(t, &mut next_lis3mdl_time, cfg.lis3mdl_rate_hz)
+        {
             let mag_body = sim.orientation[i].inverse_transform_vector(&mag_field_ned);
 
             let mut mx = mag_body.x + d_mag.sample(&mut rng);
@@ -263,7 +318,10 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
         }
 
         // 4. Barometer (Pressure)
-        if cfg.baro_enabled && !random_fault {
+        if cfg.baro_enabled
+            && !random_fault
+            && should_sample(t, &mut next_ms5611_time, cfg.ms5611_rate_hz)
+        {
             let true_alt = -sim.pos[i].z;
             let p0 = 101325.0; // Pa
             let h_scale = 8500.0; // m
@@ -315,7 +373,11 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
             .map(|(start, end)| t >= start && t <= end)
             .unwrap_or(false);
 
-        if cfg.gps_enabled && !random_fault && !gps_in_dropout {
+        if cfg.gps_enabled
+            && !random_fault
+            && !gps_in_dropout
+            && should_sample(t, &mut next_gps_time, cfg.gps_rate_hz)
+        {
             let px = sim.pos[i].x + d_gps_p.sample(&mut rng);
             let py = sim.pos[i].y + d_gps_p.sample(&mut rng);
             let pz = sim.pos[i].z + d_gps_p.sample(&mut rng); // GPS Altitude usually noisy

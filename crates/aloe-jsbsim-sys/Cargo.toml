@@ -1,0 +1,15 @@
+[package]
+name = "aloe-jsbsim-sys"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[dependencies]
+
+[build-dependencies]
+cmake = "0.1"
+cc = "1.2"

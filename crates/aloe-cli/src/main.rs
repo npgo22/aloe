@@ -7,6 +7,35 @@ use clap::{Parser, ValueEnum};
 use nalgebra::Vector3;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
+
+#[derive(Debug, Clone)]
+struct ThrustCurvePoint {
+    time_s: f64,
+    thrust_n: f64,
+}
+
+impl FromStr for ThrustCurvePoint {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let mut parts = value.split(':');
+        let time_s = parts
+            .next()
+            .ok_or_else(|| "missing thrust curve time".to_string())?
+            .parse::<f64>()
+            .map_err(|_| format!("invalid thrust curve time: {value}"))?;
+        let thrust_n = parts
+            .next()
+            .ok_or_else(|| "missing thrust curve thrust".to_string())?
+            .parse::<f64>()
+            .map_err(|_| format!("invalid thrust curve thrust: {value}"))?;
+        if parts.next().is_some() {
+            return Err(format!("invalid thrust curve point format: {value}"));
+        }
+        Ok(Self { time_s, thrust_n })
+    }
+}
 
 /// Public function that can be called from the main binary
 pub fn run_cli_main(args: &[&str]) -> Result<()> {
@@ -36,9 +65,13 @@ pub struct Args {
     #[arg(long, default_value_t = 20.0)]
     dry_mass: f64,
 
-    /// Total propellant mass at launch (kg). Affects burn rate and delta-v
-    #[arg(long, default_value_t = 10.0)]
-    propellant_mass: f64,
+    /// Fuel mass at launch (kg) for the liquid engine
+    #[arg(long, default_value_t = 10.0 / 3.0)]
+    fuel_mass: f64,
+
+    /// Oxidizer mass at launch (kg) for the liquid engine
+    #[arg(long, default_value_t = 20.0 / 3.0)]
+    oxidizer_mass: f64,
 
     /// Motor thrust force (N). Example: Estes E9 = 25N, Cesaroni Pro98 = 1500N
     #[arg(long, default_value_t = 2000.0)]
@@ -52,37 +85,117 @@ pub struct Args {
     #[arg(long, default_value_t = 0.5)]
     drag_coeff: f64,
 
+    /// Normal force coefficient per radian. Higher values weathercock more strongly
+    #[arg(long, default_value_t = 12.0)]
+    normal_force_coeff: f64,
+
     /// Reference area for drag calculation (m²). Usually cross-sectional area: π*(diameter/2)²
     #[arg(long, default_value_t = 0.018)]
     ref_area: f64,
+
+    /// Center of gravity with full propellant (m from nose)
+    #[arg(long, default_value_t = 1.5)]
+    cg_full: f64,
+
+    /// Center of gravity at burnout (m from nose)
+    #[arg(long, default_value_t = 1.4)]
+    cg_empty: f64,
+
+    /// Center of pressure location (m from nose)
+    #[arg(long, default_value_t = 2.0)]
+    cp_location: f64,
+
+    /// Body-axis roll inertia Ixx (kg·m²)
+    #[arg(long, default_value_t = 0.1)]
+    inertia_x: f64,
+
+    /// Body-axis pitch inertia Iyy (kg·m²)
+    #[arg(long, default_value_t = 15.0)]
+    inertia_y: f64,
+
+    /// Body-axis yaw inertia Izz (kg·m²)
+    #[arg(long, default_value_t = 15.0)]
+    inertia_z: f64,
+
+    /// Effective liquid-engine specific impulse (s)
+    #[arg(long, default_value_t = 200.0)]
+    isp: f64,
+
+    /// Nozzle exit location from nose (m)
+    #[arg(long, default_value_t = 3.0)]
+    nozzle_location: f64,
+
+    /// Launch rail / rod length (m)
+    #[arg(long, default_value_t = 2.0)]
+    launch_rod_length: f64,
 
     /// Gravitational acceleration (m/s²). Earth = 9.81, varies slightly with latitude/altitude
     #[arg(long, default_value_t = 9.81)]
     gravity: f64,
 
     /// Wind speed in north direction (m/s). Positive = northward, affects drift
-    #[arg(long, default_value_t = 5.0)]
-    wind_speed: f64,
+    #[arg(long, alias = "wind-speed", default_value_t = 5.0)]
+    wind_north: f64,
 
     /// Wind speed in east direction (m/s). Positive = eastward, affects drift
+    #[arg(long, alias = "wind-speed-z", default_value_t = 0.0)]
+    wind_east: f64,
+
+    /// Wind speed in down direction (m/s). Positive = downward, negative = updraft
     #[arg(long, default_value_t = 0.0)]
-    wind_speed_z: f64,
+    wind_down: f64,
 
     /// Air density at launch site (kg/m³). Sea level = 1.225, decreases with altitude
     #[arg(long, default_value_t = 1.225)]
     air_density: f64,
 
-    /// Delay before motor ignition (s). Used to simulate hold on pad
+    /// JSBSim integration step size (s). Smaller = higher fidelity, slower runtime
+    #[arg(long, default_value_t = 0.001)]
+    sim_dt: f64,
+
+    /// Maximum JSBSim simulation time (s). Longer values capture long coast/descent flights
+    #[arg(long, default_value_t = 400.0)]
+    max_time: f64,
+
+    /// Delay before engine ignition (s). Used to simulate hold on pad
     #[arg(long, default_value_t = 1.0)]
     launch_delay: f64,
 
-    /// Initial spin rate around body axis (rad/s). Used for spin-stabilized rockets
+    /// Initial spin rate around body axis (deg/s). Used for spin-stabilized rockets
     #[arg(long, default_value_t = 0.0)]
     spin_rate: f64,
 
-    /// Thrust misalignment angle (rad). Simulates canted nozzle or manufacturing defects
+    /// Thrust misalignment angle (deg). Simulates canted nozzle or manufacturing defects
     #[arg(long, default_value_t = 0.0)]
     thrust_cant: f64,
+
+    /// Nozzle exit pressure used in the generated JSBSim nozzle model (psf)
+    #[arg(long, default_value_t = 2116.22)]
+    nozzle_exit_pressure_psf: f64,
+
+    /// Nozzle exit area used in the generated JSBSim nozzle model (ft²)
+    #[arg(long, default_value_t = 0.01)]
+    nozzle_area_ft2: f64,
+
+    /// Pad static friction coefficient in JSBSim ground reactions
+    #[arg(long, default_value_t = 0.8)]
+    pad_static_friction: f64,
+
+    /// Pad dynamic friction coefficient in JSBSim ground reactions
+    #[arg(long, default_value_t = 0.4)]
+    pad_dynamic_friction: f64,
+
+    /// Pad spring coefficient in JSBSim ground reactions (lbs/ft)
+    #[arg(long, default_value_t = 10000.0)]
+    pad_spring_coeff_lbs_ft: f64,
+
+    /// Pad damping coefficient in JSBSim ground reactions (lbs/ft/s)
+    #[arg(long, default_value_t = 5000.0)]
+    pad_damping_coeff_lbs_ft_s: f64,
+
+    /// Explicit thrust-curve points as `time:thrust`, space separated. Example: --thrust-curve "0:0 0.1:800 2.5:600 2.7:0"
+    #[arg(long, value_delimiter = ' ')]
+    thrust_curve: Vec<ThrustCurvePoint>,
 
     // ── Sensor options ────────────────────────────────────────
     /// Disable all sensor noise (perfect measurements). Use for debugging or ideal trajectory analysis
@@ -103,8 +216,8 @@ pub struct Args {
     no_filter: bool,
 
     /// [DEPRECATED] Use --accel-noise-density-tune instead
-    #[arg(long, default_value_t = 0.5)]
-    accel_noise_density: f32,
+    #[arg(long)]
+    accel_noise_density: Option<f32>,
 
     // ── Sweep options ──────────────────────────────────────────
     /// Space-separated list of parameters to sweep. Example: --sweep-params "thrust drag_coeff"
@@ -125,40 +238,40 @@ pub struct Args {
 
     // ── ESKF tuning parameters ──────────────────────────────────
     /// Accelerometer noise density (m/s²/√Hz). Controls Q matrix diagonal for accel. Higher = trust accel less
-    #[arg(long, default_value_t = 0.2236)]
-    accel_noise_density_tune: f32,
+    #[arg(long)]
+    accel_noise_density_tune: Option<f32>,
 
     /// Gyroscope noise density (rad/s/√Hz). Controls Q matrix diagonal for gyro. Higher = trust gyro less
-    #[arg(long, default_value_t = 0.03728)]
-    gyro_noise_density: f32,
+    #[arg(long)]
+    gyro_noise_density: Option<f32>,
 
     /// Accelerometer bias random walk (m/s²). Models slow drift in accel bias over time
-    #[arg(long, default_value_t = 0.01)]
-    accel_bias_instability: f32,
+    #[arg(long)]
+    accel_bias_instability: Option<f32>,
 
     /// Gyroscope bias random walk (rad/s). Models slow drift in gyro bias over time
-    #[arg(long, default_value_t = 3.728e-5)]
-    gyro_bias_instability: f32,
+    #[arg(long)]
+    gyro_bias_instability: Option<f32>,
 
     /// Position process noise variance (m²). Models uncertainty in position dynamics
-    #[arg(long, default_value_t = 1.0)]
-    pos_process_noise: f32,
+    #[arg(long)]
+    pos_process_noise: Option<f32>,
 
     /// GPS position measurement noise variance (m²). R matrix for GPS position updates
-    #[arg(long, default_value_t = 61.05)]
-    r_gps_pos: f32,
+    #[arg(long)]
+    r_gps_pos: Option<f32>,
 
     /// GPS velocity measurement noise variance ((m/s)²). R matrix for GPS velocity updates
-    #[arg(long, default_value_t = 0.07197)]
-    r_gps_vel: f32,
+    #[arg(long)]
+    r_gps_vel: Option<f32>,
 
     /// Barometer measurement noise variance (m²). R matrix for baro altitude updates
-    #[arg(long, default_value_t = 0.1)]
-    r_baro: f32,
+    #[arg(long)]
+    r_baro: Option<f32>,
 
     /// Magnetometer measurement noise variance (rad²). R matrix for mag heading updates
-    #[arg(long, default_value_t = 1.0)]
-    r_mag: f32,
+    #[arg(long)]
+    r_mag: Option<f32>,
 
     // ── Tune-sweep mode ───────────────────────────────────
     /// Enable filter tuning mode with greedy coordinate descent optimization
@@ -257,7 +370,8 @@ fn run_single(args: &Args) -> Result<()> {
         // 3. Run Filter (if requested)
         let f_res = if !args.no_filter {
             println!("Running Navigation Filter...");
-            Some(run_filter(&result, &s_data, &FilterConfig::default()))
+            let filter_config = build_filter_config(args);
+            Some(run_filter(&result, &s_data, &filter_config))
         } else {
             None
         };
@@ -344,36 +458,49 @@ fn run_sweep(args: &Args) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn build_rocket_params(args: &Args) -> RocketParams {
-    // Construct the 6-DoF params from simple CLI args
-    RocketParams {
-        dry_mass: args.dry_mass,
-        propellant_mass: args.propellant_mass,
-        // Approximate inertia for a cylinder: I = 1/12 * M * L^2
-        // Assuming Length = 3.0m
-        inertia_tensor: Vector3::new(0.1, 15.0, 15.0),
-        cg_full: 1.5,
-        cg_empty: 1.4,
-        cp_location: 2.0, // Stable (behind CG)
-        ref_area: args.ref_area,
-        drag_coeff_axial: args.drag_coeff,
-        normal_force_coeff: 12.0,
-        // Create a square pulse thrust curve
-        thrust_curve: vec![
+    let thrust_curve = if args.thrust_curve.is_empty() {
+        vec![
             (0.0, args.thrust),
             (args.burn_time, args.thrust),
             (args.burn_time + 0.01, 0.0),
-        ],
+        ]
+    } else {
+        args.thrust_curve
+            .iter()
+            .map(|point| (point.time_s, point.thrust_n))
+            .collect()
+    };
+
+    RocketParams {
+        dry_mass: args.dry_mass,
+        fuel_mass: args.fuel_mass,
+        oxidizer_mass: args.oxidizer_mass,
+        inertia_tensor: Vector3::new(args.inertia_x, args.inertia_y, args.inertia_z),
+        cg_full: args.cg_full,
+        cg_empty: args.cg_empty,
+        cp_location: args.cp_location,
+        ref_area: args.ref_area,
+        drag_coeff_axial: args.drag_coeff,
+        normal_force_coeff: args.normal_force_coeff,
+        thrust_curve,
         burn_time: args.burn_time,
-        isp: 200.0,
-        nozzle_location: 3.0,
+        isp: args.isp,
+        nozzle_location: args.nozzle_location,
         gravity: args.gravity,
         air_density_sea_level: args.air_density,
-        launch_rod_length: 2.0,
-        // Map wind args (North/East) to NED
-        wind_velocity_ned: Vector3::new(args.wind_speed, args.wind_speed_z, 0.0),
+        launch_rod_length: args.launch_rod_length,
+        wind_velocity_ned: Vector3::new(args.wind_north, args.wind_east, args.wind_down),
         launch_delay: args.launch_delay,
         spin_rate: args.spin_rate,
         thrust_cant: args.thrust_cant,
+        nozzle_exit_pressure_psf: args.nozzle_exit_pressure_psf,
+        nozzle_area_ft2: args.nozzle_area_ft2,
+        pad_static_friction: args.pad_static_friction,
+        pad_dynamic_friction: args.pad_dynamic_friction,
+        pad_spring_coeff_lbs_ft: args.pad_spring_coeff_lbs_ft,
+        pad_damping_coeff_lbs_ft_s: args.pad_damping_coeff_lbs_ft_s,
+        sim_dt: args.sim_dt,
+        max_time: args.max_time,
     }
 }
 
@@ -395,6 +522,12 @@ fn build_sensor_config(args: &Args) -> SensorConfig {
         mag_enabled: true,
         baro_enabled: true,
         gps_enabled: true,
+        bmi088_accel_rate_hz: 1000.0,
+        bmi088_gyro_rate_hz: 1000.0,
+        adxl375_rate_hz: 3200.0,
+        lis3mdl_rate_hz: 100.0,
+        ms5611_rate_hz: 50.0,
+        gps_rate_hz: 10.0,
         accel_saturation: 200.0, // BMI088: ±200 m/s²
         gyro_saturation: 34.9,   // BMI088: 2000 deg/s
         chaos: ChaosConfig::default(),
@@ -413,6 +546,37 @@ fn build_sensor_config(args: &Args) -> SensorConfig {
     }
 
     cfg
+}
+
+fn build_filter_config(args: &Args) -> FilterConfig {
+    let mut cfg = FilterConfig {
+        mag_declination_deg: args.mag_declination as f64,
+        home_lat_deg: args.home_lat as f64,
+        home_lon_deg: args.home_lon as f64,
+        home_alt_m: args.home_alt as f64,
+        ..FilterConfig::default()
+    };
+
+    apply_filter_override(
+        &mut cfg.accel_noise_density,
+        args.accel_noise_density_tune.or(args.accel_noise_density),
+    );
+    apply_filter_override(&mut cfg.gyro_noise_density, args.gyro_noise_density);
+    apply_filter_override(&mut cfg.accel_bias_instability, args.accel_bias_instability);
+    apply_filter_override(&mut cfg.gyro_bias_instability, args.gyro_bias_instability);
+    apply_filter_override(&mut cfg.pos_process_noise, args.pos_process_noise);
+    apply_filter_override(&mut cfg.r_gps_pos, args.r_gps_pos);
+    apply_filter_override(&mut cfg.r_gps_vel, args.r_gps_vel);
+    apply_filter_override(&mut cfg.r_baro, args.r_baro);
+    apply_filter_override(&mut cfg.r_mag, args.r_mag);
+
+    cfg
+}
+
+fn apply_filter_override(values: &mut [f64], override_value: Option<f32>) {
+    if let Some(value) = override_value {
+        values.fill(value as f64);
+    }
 }
 
 fn print_sim_stats(result: &SimResult) {
@@ -530,6 +694,78 @@ struct TuneMetrics {
     apogee_time_error_s: f64,
 }
 
+impl TuneMetrics {
+    fn zero() -> Self {
+        Self {
+            pos3d_rmse_m: 0.0,
+            alt_rmse_m: 0.0,
+            vel3d_rmse_m: 0.0,
+            pos_max_m: 0.0,
+            alt_max_m: 0.0,
+            apogee_time_error_s: 0.0,
+        }
+    }
+
+    fn average(samples: &[Self]) -> Self {
+        if samples.is_empty() {
+            return Self::zero();
+        }
+
+        let mut sum = Self::zero();
+        let mut apogee_sum = 0.0;
+        let mut apogee_count = 0usize;
+
+        for sample in samples {
+            sum.pos3d_rmse_m += sample.pos3d_rmse_m;
+            sum.alt_rmse_m += sample.alt_rmse_m;
+            sum.vel3d_rmse_m += sample.vel3d_rmse_m;
+            sum.pos_max_m += sample.pos_max_m;
+            sum.alt_max_m += sample.alt_max_m;
+            if sample.apogee_time_error_s.is_finite() {
+                apogee_sum += sample.apogee_time_error_s;
+                apogee_count += 1;
+            }
+        }
+
+        let count = samples.len() as f64;
+        Self {
+            pos3d_rmse_m: sum.pos3d_rmse_m / count,
+            alt_rmse_m: sum.alt_rmse_m / count,
+            vel3d_rmse_m: sum.vel3d_rmse_m / count,
+            pos_max_m: sum.pos_max_m / count,
+            alt_max_m: sum.alt_max_m / count,
+            apogee_time_error_s: if apogee_count > 0 {
+                apogee_sum / apogee_count as f64
+            } else {
+                f64::NAN
+            },
+        }
+    }
+}
+
+struct SensorSweepCase {
+    seed: u64,
+    noise_scale: f64,
+    sensor_data: SensorData,
+}
+
+#[derive(Debug, Clone)]
+/// Row data for tune sweep CSV output
+struct SummaryRow {
+    iteration: usize,
+    param_name: String,
+    stage: usize,
+    value: f64,
+    seed: String,
+    noise_scale: String,
+    pos3d_rmse_m: f64,
+    alt_rmse_m: f64,
+    vel3d_rmse_m: f64,
+    pos_max_m: f64,
+    alt_max_m: f64,
+    apogee_time_error_s: f64,
+}
+
 // ---------------------------------------------------------------------------
 fn get_param_spec(name: &str) -> (f64, f64) {
     match name {
@@ -620,50 +856,47 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
         vec![0, 1, 2, 3] // All stages
     };
 
-    // Use first noise scale and seed if provided
-    let noise_scale = args
-        .tune_noise_scales
-        .first()
-        .copied()
-        .unwrap_or(args.noise_scale);
-    let seed = args.tune_seeds.first().copied().unwrap_or(args.seed);
+    let tune_noise_scales = if args.tune_noise_scales.is_empty() {
+        vec![args.noise_scale]
+    } else {
+        args.tune_noise_scales.clone()
+    };
+    let tune_seeds = if args.tune_seeds.is_empty() {
+        vec![args.seed]
+    } else {
+        args.tune_seeds.clone()
+    };
 
     // Base simulation parameters
     let base_params = build_rocket_params(args);
     let base_sim = simulate_6dof(&base_params);
 
-    // Base sensor config with tuned noise/seed
-    let mut base_sensor_cfg = build_sensor_config(args);
-    base_sensor_cfg.noise_scale = noise_scale;
-    base_sensor_cfg.seed = seed;
-    let base_sensor_data = generate_sensor_data(&base_sim, &base_sensor_cfg);
+    // Reuse one truth simulation across all sensor parameter cases.
+    let mut sensor_sweep_cases = Vec::new();
+    for &noise_scale in &tune_noise_scales {
+        for &seed in &tune_seeds {
+            let mut cfg = build_sensor_config(args);
+            cfg.noise_scale = noise_scale;
+            cfg.seed = seed;
+            sensor_sweep_cases.push(SensorSweepCase {
+                seed,
+                noise_scale,
+                sensor_data: generate_sensor_data(&base_sim, &cfg),
+            });
+        }
+    }
 
     // Base filter config
-    let mut base_filter_cfg = FilterConfig::default();
+    let mut base_filter_cfg = build_filter_config(args);
 
-    // Compute baseline metrics
-    let baseline_filter = run_filter(&base_sim, &base_sensor_data, &base_filter_cfg);
-    let baseline_metrics = compute_tune_metrics(&base_sim, &baseline_filter);
+    // Compute baseline metrics across all requested sensor cases.
+    let baseline_metrics = evaluate_filter_config(&base_sim, &sensor_sweep_cases, &base_filter_cfg);
     let baseline_rmse = baseline_metrics.pos3d_rmse_m;
     println!("Baseline pos3d_rmse = {:.4} m", baseline_rmse);
 
-    /// Row data for tune sweep CSV output
-    struct SummaryRow {
-        iteration: usize,
-        param_name: String,
-        stage: usize,
-        value: f64,
-        seed: u64,
-        noise_scale: f64,
-        pos3d_rmse_m: f64,
-        alt_rmse_m: f64,
-        vel3d_rmse_m: f64,
-        pos_max_m: f64,
-        alt_max_m: f64,
-        apogee_time_error_s: f64,
-    }
-
     let mut summary_rows: Vec<SummaryRow> = Vec::new();
+    let case_seed_summary = summarize_seeds(&sensor_sweep_cases);
+    let case_noise_summary = summarize_noise_scales(&sensor_sweep_cases);
 
     if tune_mode == "greedy" {
         // Implement greedy coordinate descent
@@ -704,8 +937,7 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
                         let mut cfg = base_filter_cfg.clone();
                         cfg.set_stage_param(stage_idx, param_name, val);
 
-                        let filter_result = run_filter(&base_sim, &base_sensor_data, &cfg);
-                        let metrics = compute_tune_metrics(&base_sim, &filter_result);
+                        let metrics = evaluate_filter_config(&base_sim, &sensor_sweep_cases, &cfg);
                         let rmse = metrics.pos3d_rmse_m;
 
                         if rmse < best_rmse {
@@ -718,8 +950,8 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
                             param_name: param_name.to_string(),
                             stage: stage_idx,
                             value: val,
-                            seed,
-                            noise_scale,
+                            seed: case_seed_summary.clone(),
+                            noise_scale: case_noise_summary.clone(),
                             pos3d_rmse_m: metrics.pos3d_rmse_m,
                             alt_rmse_m: metrics.alt_rmse_m,
                             vel3d_rmse_m: metrics.vel3d_rmse_m,
@@ -750,7 +982,11 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
         // Output optimised tuning
         let optimised = serde_json::json!({
             "baseline_rmse": baseline_rmse,
-            "optimised_rmse": compute_tune_metrics(&base_sim, &run_filter(&base_sim, &base_sensor_data, &base_filter_cfg)).pos3d_rmse_m,
+            "optimised_rmse": evaluate_filter_config(&base_sim, &sensor_sweep_cases, &base_filter_cfg).pos3d_rmse_m,
+            "sensor_cases": {
+                "seeds": tune_seeds,
+                "noise_scales": tune_noise_scales,
+            },
             "tuning": base_filter_cfg.to_json()
         });
 
@@ -776,16 +1012,15 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
                 cfg.set_stage_param(stage, tname, val);
             }
 
-            let filter_result = run_filter(&base_sim, &base_sensor_data, &cfg);
-            let metrics = compute_tune_metrics(&base_sim, &filter_result);
+            let metrics = evaluate_filter_config(&base_sim, &sensor_sweep_cases, &cfg);
 
             summary_rows.push(SummaryRow {
                 iteration: 0, // Grid sweep has no iterations
                 param_name: tname.to_string(),
                 stage: 0, // Applied to all stages
                 value: val,
-                seed,
-                noise_scale,
+                seed: case_seed_summary.clone(),
+                noise_scale: case_noise_summary.clone(),
                 pos3d_rmse_m: metrics.pos3d_rmse_m,
                 alt_rmse_m: metrics.alt_rmse_m,
                 vel3d_rmse_m: metrics.vel3d_rmse_m,
@@ -822,8 +1057,8 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
             &row.param_name,
             &format!("{}", row.stage),
             &format!("{:.6}", row.value),
-            &format!("{}", row.seed),
-            &format!("{:.4}", row.noise_scale),
+            &row.seed,
+            &row.noise_scale,
             &format!("{:.6}", row.pos3d_rmse_m),
             &format!("{:.6}", row.alt_rmse_m),
             &format!("{:.6}", row.vel3d_rmse_m),
@@ -840,4 +1075,112 @@ fn run_tune_sweep(args: &Args) -> Result<()> {
     println!("Tune-sweep summary written to {:?}", path);
 
     Ok(())
+}
+
+fn evaluate_filter_config(
+    base_sim: &SimResult,
+    sensor_sweep_cases: &[SensorSweepCase],
+    filter_cfg: &FilterConfig,
+) -> TuneMetrics {
+    let metrics: Vec<TuneMetrics> = sensor_sweep_cases
+        .iter()
+        .map(|sensor_case| {
+            let filter_result = run_filter(base_sim, &sensor_case.sensor_data, filter_cfg);
+            compute_tune_metrics(base_sim, &filter_result)
+        })
+        .collect();
+
+    TuneMetrics::average(&metrics)
+}
+
+fn summarize_seeds(sensor_sweep_cases: &[SensorSweepCase]) -> String {
+    let mut seeds: Vec<u64> = sensor_sweep_cases.iter().map(|case| case.seed).collect();
+    seeds.sort_unstable();
+    seeds.dedup();
+    seeds
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn summarize_noise_scales(sensor_sweep_cases: &[SensorSweepCase]) -> String {
+    let mut scales: Vec<f64> = sensor_sweep_cases
+        .iter()
+        .map(|case| case.noise_scale)
+        .collect();
+    scales.sort_by(|a, b| a.total_cmp(b));
+    scales.dedup_by(|a, b| a.total_cmp(b).is_eq());
+    scales
+        .iter()
+        .map(|scale| format!("{scale:.4}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_filter_config_preserves_stage_defaults_without_overrides() {
+        let args = Args::parse_from(["aloe-cli"]);
+        let cfg = build_filter_config(&args);
+        let defaults = FilterConfig::default();
+
+        assert_eq!(cfg.accel_noise_density, defaults.accel_noise_density);
+        assert_eq!(cfg.gyro_noise_density, defaults.gyro_noise_density);
+        assert_eq!(cfg.accel_bias_instability, defaults.accel_bias_instability);
+        assert_eq!(cfg.gyro_bias_instability, defaults.gyro_bias_instability);
+        assert_eq!(cfg.pos_process_noise, defaults.pos_process_noise);
+        assert_eq!(cfg.r_gps_pos, defaults.r_gps_pos);
+        assert_eq!(cfg.r_gps_vel, defaults.r_gps_vel);
+        assert_eq!(cfg.r_baro, defaults.r_baro);
+        assert_eq!(cfg.r_mag, defaults.r_mag);
+    }
+
+    #[test]
+    fn build_filter_config_applies_explicit_overrides_to_all_stages() {
+        let args = Args::parse_from([
+            "aloe-cli",
+            "--gyro-noise-density",
+            "0.25",
+            "--r-baro",
+            "5.0",
+            "--accel-noise-density",
+            "0.5",
+        ]);
+        let cfg = build_filter_config(&args);
+
+        assert!(cfg
+            .gyro_noise_density
+            .iter()
+            .all(|value| (*value - 0.25).abs() < f64::EPSILON));
+        assert!(cfg
+            .r_baro
+            .iter()
+            .all(|value| (*value - 5.0).abs() < f64::EPSILON));
+        assert!(cfg
+            .accel_noise_density
+            .iter()
+            .all(|value| (*value - 0.5).abs() < f64::EPSILON));
+    }
+
+    #[test]
+    fn build_rocket_params_includes_backend_runtime_knobs() {
+        let args = Args::parse_from([
+            "aloe-cli",
+            "--wind-down",
+            "3.5",
+            "--sim-dt",
+            "0.002",
+            "--max-time",
+            "120",
+        ]);
+        let params = build_rocket_params(&args);
+
+        assert!((params.wind_velocity_ned.z - 3.5).abs() < f64::EPSILON);
+        assert!((params.sim_dt - 0.002).abs() < f64::EPSILON);
+        assert!((params.max_time - 120.0).abs() < f64::EPSILON);
+    }
 }

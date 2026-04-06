@@ -1,7 +1,7 @@
 use crate::sensor::SensorData;
 use crate::sim::SimResult;
 use aloe_core::eskf::{EskfTuning, RocketEsKf};
-use aloe_core::state_machine::{StateInput, StateMachine};
+use aloe_core::state_machine::{StateInput, StateMachine, StateMachineConfig};
 use nalgebra::Vector3;
 
 /// Struct to hold the output of the filter simulation.
@@ -28,6 +28,16 @@ pub struct FilterConfig {
     pub home_lat_deg: f64,
     pub home_lon_deg: f64,
     pub home_alt_m: f64,
+    pub launch_accel_thresh: f64,
+    pub launch_vel_thresh: f64,
+    pub burnout_accel_thresh: f64,
+    pub min_ascent_time: f64,
+    pub apogee_descent_thresh: f64,
+    pub min_coast_time: f64,
+    pub landing_vel_thresh: f64,
+    pub landing_alt_thresh: f64,
+    pub landing_confirm_window: f64,
+    pub high_velocity_baro_thresh: f64,
     pub accel_noise_density: Vec<f64>,
     pub gyro_noise_density: Vec<f64>,
     pub accel_bias_instability: Vec<f64>,
@@ -92,6 +102,16 @@ impl FilterConfig {
             "home_lat_deg": self.home_lat_deg,
             "home_lon_deg": self.home_lon_deg,
             "home_alt_m": self.home_alt_m,
+            "launch_accel_thresh": self.launch_accel_thresh,
+            "launch_vel_thresh": self.launch_vel_thresh,
+            "burnout_accel_thresh": self.burnout_accel_thresh,
+            "min_ascent_time": self.min_ascent_time,
+            "apogee_descent_thresh": self.apogee_descent_thresh,
+            "min_coast_time": self.min_coast_time,
+            "landing_vel_thresh": self.landing_vel_thresh,
+            "landing_alt_thresh": self.landing_alt_thresh,
+            "landing_confirm_window": self.landing_confirm_window,
+            "high_velocity_baro_thresh": self.high_velocity_baro_thresh,
             "accel_noise_density": self.accel_noise_density,
             "gyro_noise_density": self.gyro_noise_density,
             "accel_bias_instability": self.accel_bias_instability,
@@ -137,6 +157,16 @@ impl Default for FilterConfig {
             home_lat_deg: 35.0,
             home_lon_deg: -106.0,
             home_alt_m: 1500.0,
+            launch_accel_thresh: 20.0,
+            launch_vel_thresh: 10.0,
+            burnout_accel_thresh: 2.0,
+            min_ascent_time: 0.5,
+            apogee_descent_thresh: 1.0,
+            min_coast_time: 2.0,
+            landing_vel_thresh: 0.5,
+            landing_alt_thresh: 100.0,
+            landing_confirm_window: 2.0,
+            high_velocity_baro_thresh: 170.0,
             accel_noise_density,
             gyro_noise_density,
             accel_bias_instability,
@@ -170,8 +200,18 @@ pub fn run_filter(
         config.home_alt_m as f32,
     );
 
-    let mut state_machine =
-        StateMachine::new(aloe_core::state_machine::StateMachineConfig::default());
+    let mut state_machine = StateMachine::new(StateMachineConfig {
+        launch_accel_thresh: config.launch_accel_thresh as f32,
+        launch_vel_thresh: config.launch_vel_thresh as f32,
+        burnout_accel_thresh: config.burnout_accel_thresh as f32,
+        min_ascent_time: config.min_ascent_time as f32,
+        apogee_descent_thresh: config.apogee_descent_thresh as f32,
+        min_coast_time: config.min_coast_time as f32,
+        landing_vel_thresh: config.landing_vel_thresh as f32,
+        landing_alt_thresh: config.landing_alt_thresh as f32,
+        landing_confirm_window: config.landing_confirm_window as f32,
+        high_velocity_baro_thresh: config.high_velocity_baro_thresh as f32,
+    });
 
     // Outputs
     let mut time_out = Vec::new();
@@ -222,7 +262,8 @@ pub fn run_filter(
         if let (Some(gps_pos), Some(gps_vel)) = (sensor_data.gps_pos[i], sensor_data.gps_vel[i]) {
             // Approx conversion: 1 deg lat ~ 111,111 m
             let lat = gps_pos.x / 111111.0;
-            let lon = gps_pos.y / (111111.0 * 1.0_f64.cos());
+            let home_lat_rad = config.home_lat_deg.to_radians();
+            let lon = gps_pos.y / (111111.0 * home_lat_rad.cos().max(1e-6));
             let alt = -gps_pos.z;
 
             let lat_deg = config.home_lat_deg + lat;
@@ -340,6 +381,19 @@ mod tests {
     use crate::sensor::{generate_sensor_data, SensorConfig};
     use crate::sim::{simulate_6dof, RocketParams};
 
+    fn gps_offset_to_geodetic(config: &FilterConfig, gps_pos: Vector3<f64>) -> (f64, f64, f64) {
+        let lat = gps_pos.x / 111111.0;
+        let home_lat_rad = config.home_lat_deg.to_radians();
+        let lon = gps_pos.y / (111111.0 * home_lat_rad.cos().max(1e-6));
+        let alt = -gps_pos.z;
+
+        (
+            config.home_lat_deg + lat,
+            config.home_lon_deg + lon,
+            config.home_alt_m + alt,
+        )
+    }
+
     #[test]
     fn test_filter_state_transitions() {
         // Run simulation
@@ -397,6 +451,29 @@ mod tests {
         assert!(
             filter_result.coast_time.unwrap() < filter_result.descent_time.unwrap(),
             "Coast before descent"
+        );
+    }
+
+    #[test]
+    fn test_gps_east_offset_uses_home_latitude() {
+        let config = FilterConfig {
+            home_lat_deg: 35.0,
+            home_lon_deg: -106.0,
+            home_alt_m: 1500.0,
+            ..FilterConfig::default()
+        };
+
+        let east_offset_m = 1000.0;
+        let gps_pos = Vector3::new(0.0, east_offset_m, 0.0);
+        let (_lat_deg, lon_deg, _alt_msl) = gps_offset_to_geodetic(&config, gps_pos);
+
+        let expected_lon_delta =
+            east_offset_m / (111111.0 * config.home_lat_deg.to_radians().cos());
+        let actual_lon_delta = lon_deg - config.home_lon_deg;
+
+        assert!(
+            (actual_lon_delta - expected_lon_delta).abs() < 1e-9,
+            "GPS east offset should be converted using home latitude cosine"
         );
     }
 }

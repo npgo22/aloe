@@ -25,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build project
@@ -53,35 +55,37 @@ jobs:
             args: ""
           - name: 12km-preset
             args: >-
-              --dry-mass 25 --propellant-mass 15 --thrust 3500 --burn-time 6
-              --drag-coeff 0.42 --ref-area 0.02 --wind-speed 8 --wind-speed-z 1
+              --dry-mass 25 --fuel-mass 5 --oxidizer-mass 10 --thrust 3500 --burn-time 6
+              --drag-coeff 0.42 --ref-area 0.02 --wind-north 8 --wind-east 1
           - name: 30km-preset
             args: >-
-              --dry-mass 80 --propellant-mass 120 --thrust 18000 --burn-time 12
-              --drag-coeff 0.38 --ref-area 0.045 --wind-speed 5 --wind-speed-z 0
+              --dry-mass 80 --fuel-mass 40 --oxidizer-mass 80 --thrust 18000 --burn-time 12
+              --drag-coeff 0.38 --ref-area 0.045 --wind-north 5 --wind-east 0
           - name: heavy-low-thrust
             args: >-
-              --dry-mass 1000 --propellant-mass 11000 --thrust 4000 --burn-time 20
+              --dry-mass 1000 --fuel-mass 3666.6667 --oxidizer-mass 7333.3333 --thrust 4000 --burn-time 20
               --drag-coeff 0.6 --ref-area 0.06
           - name: light-high-thrust
             args: >-
-              --dry-mass 10 --propellant-mass 30 --thrust 12000 --burn-time 100
+              --dry-mass 10 --fuel-mass 10 --oxidizer-mass 20 --thrust 12000 --burn-time 100
               --drag-coeff 0.3100 --ref-area 0.02
           - name: windy
             args: >-
-              --wind-speed 1100 --wind-speed-z 8 --air-density 1.0
+              --wind-north 1100 --wind-east 8 --air-density 1.0
           - name: spin-cant-delay
             args: >-
               --launch-delay 100 --spin-rate 720 --thrust-cant 3.0
           - name: long-burn
             args: >-
-              --dry-mass 2100 --propellant-mass 200 --thrust 8000 --burn-time 30
+              --dry-mass 2100 --fuel-mass 66.6667 --oxidizer-mass 133.3333 --thrust 8000 --burn-time 30
               --drag-coeff 0.100 --ref-area 0.04
         noise_scale: [1, 2, 3, 4, 5]
         seed: [42, 69, 23, 18, 22]
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Restore build cache

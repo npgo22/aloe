@@ -5,6 +5,8 @@ members = [
     "crates/aloe-cli",
     "crates/aloe-gui",
     "crates/aloe",
+    "crates/aloe-jsbsim-sys",
+    "crates/aloe-jsbsim",
 ]
 resolver = "2"
 
@@ -31,6 +33,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
 tokio = { version = "1.0", features = ["full"] }
+tempfile = "3.20"
 
 # Logging and tracing
 tracing = "0.1"
@@ -46,6 +49,8 @@ katex-doc = "0.1"
 # Workspace members
 aloe-core = { path = "crates/aloe-core" }
 aloe-sim = { path = "crates/aloe-sim" }
+aloe-jsbsim-sys = { path = "crates/aloe-jsbsim-sys" }
+aloe-jsbsim = { path = "crates/aloe-jsbsim" }
 
 [profile.release]
 opt-level = 3

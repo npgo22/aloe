@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 aloe-core.workspace = true
+aloe-jsbsim.workspace = true
 nalgebra = { workspace = true, features = ["std"] }
 libm.workspace = true
 rand.workspace = true
