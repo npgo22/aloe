@@ -3,6 +3,9 @@ use nalgebra::Vector3;
 use rand::{rngs::StdRng, SeedableRng};
 use rand_distr::{Distribution, Normal}; // Assuming sim is in the same crate
 
+const GPS_LATENCY_S: f64 = 0.12;
+const BARO_TIME_CONSTANT_S: f64 = 0.08;
+
 /// Configuration for chaos/fault injection testing
 #[derive(Debug, Clone)]
 pub struct ChaosConfig {
@@ -166,6 +169,19 @@ fn should_sample(t: f64, next_sample_time: &mut f64, rate_hz: f64) -> bool {
     true
 }
 
+fn index_at_or_before_time(time: &[f64], target_time: f64, current_index: usize) -> usize {
+    let search_hi = current_index.min(time.len().saturating_sub(1));
+    if time.is_empty() || search_hi == 0 || target_time <= time[0] {
+        return 0;
+    }
+
+    match time[..=search_hi].binary_search_by(|probe| probe.total_cmp(&target_time)) {
+        Ok(i) => i,
+        Err(0) => 0,
+        Err(i) => i.saturating_sub(1),
+    }
+}
+
 pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
     let mut rng = StdRng::seed_from_u64(cfg.seed);
 
@@ -205,17 +221,23 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
     let mut next_lis3mdl_time = 0.0;
     let mut next_ms5611_time = 0.0;
     let mut next_gps_time = 0.0;
+    let mut baro_state_pressure = 101325.0;
 
     for i in 0..n {
         let t = sim.time[i];
+        let dt_s = if i > 0 {
+            (sim.time[i] - sim.time[i - 1]).max(0.0)
+        } else {
+            0.0
+        };
 
         // Update accumulated gyro drift based on chaos config
         for (drift_start, drift_rate) in &cfg.chaos.gyro_drift {
             if t >= *drift_start {
                 // Add drift at each timestep (drift_rate is rad/s per axis)
-                accumulated_gyro_drift.x += drift_rate * 0.001; // Assuming 1ms timestep
-                accumulated_gyro_drift.y += drift_rate * 0.001;
-                accumulated_gyro_drift.z += drift_rate * 0.001;
+                accumulated_gyro_drift.x += drift_rate * dt_s;
+                accumulated_gyro_drift.y += drift_rate * dt_s;
+                accumulated_gyro_drift.z += drift_rate * dt_s;
             }
         }
 
@@ -350,7 +372,16 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
             let velocity_noise_factor = 1.0 + (v_mag / 100.0).min(5.0);
             let noise_component = d_baro.sample(&mut rng) * velocity_noise_factor;
 
-            let mut meas_pressure = static_pressure + pressure_error + noise_component;
+            // First-order barometer response lag
+            let pressure_target = static_pressure + pressure_error;
+            let alpha = if dt_s > 0.0 {
+                1.0 - (-dt_s / BARO_TIME_CONSTANT_S).exp()
+            } else {
+                1.0
+            };
+            baro_state_pressure += alpha * (pressure_target - baro_state_pressure);
+
+            let mut meas_pressure = baro_state_pressure + noise_component;
 
             // Apply barometer spikes from chaos config
             for (spike_time, pressure_offset) in &cfg.chaos.baro_spikes {
@@ -378,14 +409,18 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
             && !gps_in_dropout
             && should_sample(t, &mut next_gps_time, cfg.gps_rate_hz)
         {
-            let px = sim.pos[i].x + d_gps_p.sample(&mut rng);
-            let py = sim.pos[i].y + d_gps_p.sample(&mut rng);
-            let pz = sim.pos[i].z + d_gps_p.sample(&mut rng); // GPS Altitude usually noisy
+            let gps_truth_index = index_at_or_before_time(&sim.time, t - GPS_LATENCY_S, i);
+            let gps_pos_truth = sim.pos[gps_truth_index];
+            let gps_vel_truth = sim.vel[gps_truth_index];
+
+            let px = gps_pos_truth.x + d_gps_p.sample(&mut rng);
+            let py = gps_pos_truth.y + d_gps_p.sample(&mut rng);
+            let pz = gps_pos_truth.z + d_gps_p.sample(&mut rng); // GPS Altitude usually noisy
             data.gps_pos.push(Some(Vector3::new(px, py, pz)));
 
-            let vx = sim.vel[i].x + d_gps_v.sample(&mut rng);
-            let vy = sim.vel[i].y + d_gps_v.sample(&mut rng);
-            let vz = sim.vel[i].z + d_gps_v.sample(&mut rng);
+            let vx = gps_vel_truth.x + d_gps_v.sample(&mut rng);
+            let vy = gps_vel_truth.y + d_gps_v.sample(&mut rng);
+            let vz = gps_vel_truth.z + d_gps_v.sample(&mut rng);
             data.gps_vel.push(Some(Vector3::new(vx, vy, vz)));
         } else {
             data.gps_pos.push(None);
@@ -394,4 +429,87 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
     }
 
     data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nalgebra::UnitQuaternion;
+
+    fn simple_sim_result(
+        time: Vec<f64>,
+        pos: Vec<Vector3<f64>>,
+        vel: Vec<Vector3<f64>>,
+    ) -> SimResult {
+        let n = time.len();
+        SimResult {
+            time,
+            pos,
+            vel,
+            accel_body: vec![Vector3::zeros(); n],
+            ang_vel: vec![Vector3::zeros(); n],
+            orientation: vec![UnitQuaternion::identity(); n],
+            ascent_time: None,
+            coast_time: None,
+            descent_time: None,
+        }
+    }
+
+    #[test]
+    fn gyro_drift_scales_with_sim_timestep() {
+        let sim = simple_sim_result(
+            vec![0.0, 0.1, 0.3],
+            vec![Vector3::zeros(); 3],
+            vec![Vector3::zeros(); 3],
+        );
+
+        let cfg = SensorConfig {
+            noise_scale: 0.0,
+            gyro_noise_std: 0.0,
+            gyro_enabled: true,
+            bmi088_gyro_rate_hz: 1000.0,
+            chaos: ChaosConfig::with_gyro_drift(0.0, 1.0),
+            ..SensorConfig::default()
+        };
+
+        let data = generate_sensor_data(&sim, &cfg);
+        let g0 = data.gyro_meas[0].unwrap();
+        let g1 = data.gyro_meas[1].unwrap();
+        let g2 = data.gyro_meas[2].unwrap();
+
+        assert!(g0.x.abs() < 1e-9);
+        assert!((g1.x - 0.1).abs() < 1e-9);
+        assert!((g2.x - 0.3).abs() < 1e-9);
+    }
+
+    #[test]
+    fn gps_measurements_follow_latency_truth_history() {
+        let time = vec![0.0, 0.1, 0.2, 0.3];
+        let pos = time
+            .iter()
+            .map(|t| Vector3::new(10.0 * t, 0.0, 0.0))
+            .collect::<Vec<_>>();
+        let vel = vec![Vector3::new(10.0, 0.0, 0.0); time.len()];
+        let sim = simple_sim_result(time, pos, vel);
+
+        let cfg = SensorConfig {
+            noise_scale: 0.0,
+            gps_enabled: true,
+            gps_rate_hz: 1000.0,
+            gps_pos_noise_std: 0.0,
+            gps_vel_noise_std: 0.0,
+            ..SensorConfig::default()
+        };
+
+        let data = generate_sensor_data(&sim, &cfg);
+        let x0 = data.gps_pos[0].unwrap().x;
+        let x1 = data.gps_pos[1].unwrap().x;
+        let x2 = data.gps_pos[2].unwrap().x;
+        let x3 = data.gps_pos[3].unwrap().x;
+
+        assert!((x0 - 0.0).abs() < 1e-9);
+        assert!((x1 - 0.0).abs() < 1e-9);
+        assert!((x2 - 0.0).abs() < 1e-9);
+        assert!((x3 - 1.0).abs() < 1e-9);
+    }
 }
