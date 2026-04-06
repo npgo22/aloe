@@ -532,7 +532,10 @@ fn serve_embedded_asset(path: &str) -> Response<Body> {
 
     Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body(Body::empty())
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(format!(
+            "Embedded frontend asset not found: {path}"
+        )))
         .expect("response builder should not fail")
 }
 
