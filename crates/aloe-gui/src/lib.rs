@@ -165,8 +165,11 @@ struct AlgorithmSimulationOutput {
 }
 
 const SCALAR_TARGET_POINTS: usize = 1200;
+/// Auxiliary linear-filter state dimensionality: [px, py, pz, vx, vy, vz].
 const AUX_FILTER_STATE_DIM: usize = 6;
+/// Auxiliary linear-filter measurement dimensionality: GPS position+velocity in 3D.
 const AUX_FILTER_MEASUREMENT_DIM: usize = 6;
+/// Auxiliary linear-filter timestep aligned to simulator base rate (1 kHz).
 const AUX_FILTER_TIMESTEP_S: f64 = 0.001;
 
 #[derive(Clone)]
@@ -866,7 +869,8 @@ fn identity6() -> Vec<f64> {
 
 fn build_aux_process_noise(filter_config: &FilterConfig) -> Vec<f64> {
     let mut q = vec![0.0_f64; AUX_FILTER_STATE_DIM * AUX_FILTER_STATE_DIM];
-    // Auxiliary linear filters currently use one global tuning profile (stage 0).
+    // Auxiliary linear filters currently do not model flight-stage transitions, so they use
+    // a single global noise profile from stage 0 for stable, comparable behavior.
     for i in 0..3 {
         q[i * AUX_FILTER_STATE_DIM + i] = filter_config.pos_process_noise[0].max(1e-6);
     }
@@ -878,7 +882,8 @@ fn build_aux_process_noise(filter_config: &FilterConfig) -> Vec<f64> {
 
 fn build_aux_measurement_noise(filter_config: &FilterConfig) -> Vec<f64> {
     let mut r = vec![0.0_f64; AUX_FILTER_MEASUREMENT_DIM * AUX_FILTER_MEASUREMENT_DIM];
-    // Auxiliary linear filters currently use one global tuning profile (stage 0).
+    // Auxiliary linear filters currently do not model flight-stage transitions, so they use
+    // a single global noise profile from stage 0 for stable, comparable behavior.
     for i in 0..3 {
         r[i * AUX_FILTER_MEASUREMENT_DIM + i] = filter_config.r_gps_pos[0].max(1e-6);
     }
@@ -1687,11 +1692,15 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             let active_filter_algorithm = if algorithm_outputs.contains_key(&requested_active) {
                 requested_active
             } else {
-                FilterAlgorithm::Eskf.as_str().to_string()
+                algorithm_outputs
+                    .keys()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| FilterAlgorithm::Eskf.as_str().to_string())
             };
             let selected_output = algorithm_outputs
                 .get(&active_filter_algorithm)
-                .or_else(|| algorithm_outputs.get(FilterAlgorithm::Eskf.as_str()));
+                .or_else(|| algorithm_outputs.values().next());
             let selected_data = selected_output
                 .map(|s| s.filter_data.clone())
                 .unwrap_or_else(AlgorithmFilterData::empty);

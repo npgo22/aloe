@@ -276,6 +276,7 @@ const FILTER_ALGORITHM_LABELS: Record<FilterAlgorithm, string> = {
   kalman: 'Kalman',
   information: 'Information'
 };
+const KNOWN_FILTER_ALGORITHMS: readonly FilterAlgorithm[] = ['eskf', 'kalman', 'information'];
 
 @Component({
   selector: 'app-root',
@@ -542,8 +543,10 @@ export class App {
       landing_alt_thresh: DEFAULT_REQUEST.filter.landing_alt_thresh,
       landing_confirm_window: DEFAULT_REQUEST.filter.landing_confirm_window,
       high_velocity_baro_thresh: DEFAULT_REQUEST.filter.high_velocity_baro_thresh,
-      selected_algorithms: DEFAULT_REQUEST.filter.selected_algorithms,
-      active_algorithm: DEFAULT_REQUEST.filter.active_algorithm,
+      selected_algorithms: this.fb.nonNullable.control<FilterAlgorithm[]>([
+        ...DEFAULT_REQUEST.filter.selected_algorithms
+      ]),
+      active_algorithm: this.fb.nonNullable.control<FilterAlgorithm>(DEFAULT_REQUEST.filter.active_algorithm),
       stage_tuning: this.fb.array(DEFAULT_REQUEST.filter.stage_tuning.map((stage) => this.createStageTuningGroup(stage)))
     }),
     options: this.fb.nonNullable.group({
@@ -871,7 +874,7 @@ export class App {
   }
 
   private buildSimulationRequest(): SimulationRequest {
-    const raw = this.form.getRawValue() as SimulationRequest;
+    const raw = this.form.getRawValue() as unknown as SimulationRequest;
 
     const convertRecord = <T extends Record<string, unknown>>(record: T): T => {
       const next = { ...record };
@@ -907,7 +910,7 @@ export class App {
   }
 
   protected toggleAlgorithm(algorithm: FilterAlgorithm, enabled: boolean): void {
-    const current = new Set(this.form.controls.filter.controls.selected_algorithms.value as FilterAlgorithm[]);
+    const current = new Set<FilterAlgorithm>(this.form.controls.filter.controls.selected_algorithms.value);
     if (enabled) {
       current.add(algorithm);
     } else {
@@ -917,15 +920,15 @@ export class App {
       current.add('eskf');
     }
     const next = this.algorithmOptions.map((x) => x.value).filter((value) => current.has(value));
-    this.form.controls.filter.controls.selected_algorithms.setValue(next as FilterAlgorithm[]);
-    const active = this.form.controls.filter.controls.active_algorithm.value as FilterAlgorithm;
+    this.form.controls.filter.controls.selected_algorithms.setValue(next);
+    const active = this.form.controls.filter.controls.active_algorithm.value;
     if (!current.has(active)) {
       this.form.controls.filter.controls.active_algorithm.setValue(next[0] ?? 'eskf');
     }
   }
 
   protected isAlgorithmSelected(algorithm: FilterAlgorithm): boolean {
-    const current = this.form.controls.filter.controls.selected_algorithms.value as FilterAlgorithm[];
+    const current = this.form.controls.filter.controls.selected_algorithms.value;
     return current.includes(algorithm);
   }
 
@@ -974,6 +977,17 @@ export class App {
     return fromMap ?? data.filter_data;
   }
 
+  private getAlgorithmLabel(algorithm: string): string {
+    if ((KNOWN_FILTER_ALGORITHMS as readonly string[]).includes(algorithm)) {
+      return FILTER_ALGORITHM_LABELS[algorithm as FilterAlgorithm];
+    }
+    return algorithm.toUpperCase();
+  }
+
+  private getActiveAlgorithmLabel(data: SimulationResponse): string {
+    return this.getAlgorithmLabel(data.active_filter_algorithm);
+  }
+
   private renderTrajectory(data: SimulationResponse): void {
     const activeFilter = this.activeFilterData(data);
     const hasFilterTrajectory = this.hasTrajectoryData(
@@ -1020,7 +1034,7 @@ export class App {
         z: convertedEskfAltitude,
         mode: 'lines',
         type: 'scatter3d',
-        name: FILTER_ALGORITHM_LABELS[(data.active_filter_algorithm as FilterAlgorithm) ?? 'eskf'] ?? 'Estimate',
+        name: this.getActiveAlgorithmLabel(data),
         line: { color: '#ff8a5b', width: 3, dash: 'dash' },
         opacity: 0.92
       });
@@ -1925,7 +1939,7 @@ export class App {
       if (!algoStats) {
         return [];
       }
-      const algorithmLabel = FILTER_ALGORITHM_LABELS[algorithmKey];
+      const algorithmLabel = this.getAlgorithmLabel(algorithmKey);
       return [
         ...this.flattenStats(algorithmLabel, 'Estimate vs True', algoStats.eskf),
         ...this.flattenStats(algorithmLabel, 'Estimate vs Quantized', algoStats.quantized_flight),
