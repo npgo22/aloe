@@ -3,8 +3,11 @@ use nalgebra::Vector3;
 use rand::{rngs::StdRng, SeedableRng};
 use rand_distr::{Distribution, Normal}; // Assuming sim is in the same crate
 
+// Typical consumer GPS pipelines (receiver + transport + parse) introduce roughly O(100 ms) lag.
 const GPS_LATENCY_S: f64 = 0.12;
+// MS5611-class barometers have a finite response; use a first-order lag in the O(10-100 ms) range.
 const BARO_TIME_CONSTANT_S: f64 = 0.08;
+const SEA_LEVEL_PRESSURE_PA: f64 = 101325.0;
 
 /// Configuration for chaos/fault injection testing
 #[derive(Debug, Clone)]
@@ -221,7 +224,7 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
     let mut next_lis3mdl_time = 0.0;
     let mut next_ms5611_time = 0.0;
     let mut next_gps_time = 0.0;
-    let mut baro_state_pressure = 101325.0;
+    let mut baro_state_pressure = SEA_LEVEL_PRESSURE_PA;
 
     for i in 0..n {
         let t = sim.time[i];
@@ -345,7 +348,7 @@ pub fn generate_sensor_data(sim: &SimResult, cfg: &SensorConfig) -> SensorData {
             && should_sample(t, &mut next_ms5611_time, cfg.ms5611_rate_hz)
         {
             let true_alt = -sim.pos[i].z;
-            let p0 = 101325.0; // Pa
+            let p0 = SEA_LEVEL_PRESSURE_PA; // Pa
             let h_scale = 8500.0; // m
             let static_pressure = p0 * (-true_alt / h_scale).exp();
 
