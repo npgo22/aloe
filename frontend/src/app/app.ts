@@ -13,6 +13,7 @@ import { TableModule } from 'primeng/table';
 
 import {
   DEFAULT_REQUEST,
+  type FilterAlgorithm,
   ROCKET_PRESETS,
   STAGE_LABELS,
   TUNING_FIELDS,
@@ -270,6 +271,12 @@ const stateColors: Record<string, string> = {
   Landed: '#a78bfa'
 };
 
+const FILTER_ALGORITHM_LABELS: Record<FilterAlgorithm, string> = {
+  eskf: 'ESKF',
+  kalman: 'Kalman',
+  information: 'Information'
+};
+
 @Component({
   selector: 'app-root',
   standalone: true,
@@ -431,6 +438,16 @@ export class App {
     { key: 'no_sensors', label: 'Disable sensor generation' },
     { key: 'no_filter', label: 'Disable filter' }
   ];
+  readonly algorithmToggleFields: Array<{ key: FilterAlgorithm; label: string }> = [
+    { key: 'eskf', label: FILTER_ALGORITHM_LABELS.eskf },
+    { key: 'kalman', label: FILTER_ALGORITHM_LABELS.kalman },
+    { key: 'information', label: FILTER_ALGORITHM_LABELS.information }
+  ];
+  readonly algorithmOptions: Array<{ value: FilterAlgorithm; label: string }> = [
+    { value: 'eskf', label: FILTER_ALGORITHM_LABELS.eskf },
+    { value: 'kalman', label: FILTER_ALGORITHM_LABELS.kalman },
+    { value: 'information', label: FILTER_ALGORITHM_LABELS.information }
+  ];
 
   readonly filterFields: FieldSpec[] = [
     { key: 'ground_pressure_mbar', label: this.labelForField('ground_pressure_mbar') },
@@ -525,6 +542,8 @@ export class App {
       landing_alt_thresh: DEFAULT_REQUEST.filter.landing_alt_thresh,
       landing_confirm_window: DEFAULT_REQUEST.filter.landing_confirm_window,
       high_velocity_baro_thresh: DEFAULT_REQUEST.filter.high_velocity_baro_thresh,
+      selected_algorithms: DEFAULT_REQUEST.filter.selected_algorithms,
+      active_algorithm: DEFAULT_REQUEST.filter.active_algorithm,
       stage_tuning: this.fb.array(DEFAULT_REQUEST.filter.stage_tuning.map((stage) => this.createStageTuningGroup(stage)))
     }),
     options: this.fb.nonNullable.group({
@@ -865,6 +884,11 @@ export class App {
     };
 
     const filter = convertRecord(raw.filter);
+    const selectedAlgorithms = (raw.filter.selected_algorithms as FilterAlgorithm[]).filter(Boolean);
+    filter.selected_algorithms = selectedAlgorithms.length ? selectedAlgorithms : ['eskf'];
+    if (!filter.selected_algorithms.includes(raw.filter.active_algorithm as FilterAlgorithm)) {
+      filter.active_algorithm = filter.selected_algorithms[0];
+    }
     filter.stage_tuning = raw.filter.stage_tuning.map((stage) => {
       const nextStage = { ...stage };
       (Object.keys(nextStage) as Array<keyof StageTuning>).forEach((key) => {
@@ -880,6 +904,36 @@ export class App {
       filter,
       options: raw.options
     };
+  }
+
+  protected toggleAlgorithm(algorithm: FilterAlgorithm, enabled: boolean): void {
+    const current = new Set(this.form.controls.filter.controls.selected_algorithms.value as FilterAlgorithm[]);
+    if (enabled) {
+      current.add(algorithm);
+    } else {
+      current.delete(algorithm);
+    }
+    if (current.size === 0) {
+      current.add('eskf');
+    }
+    const next = this.algorithmOptions.map((x) => x.value).filter((value) => current.has(value));
+    this.form.controls.filter.controls.selected_algorithms.setValue(next as FilterAlgorithm[]);
+    const active = this.form.controls.filter.controls.active_algorithm.value as FilterAlgorithm;
+    if (!current.has(active)) {
+      this.form.controls.filter.controls.active_algorithm.setValue(next[0] ?? 'eskf');
+    }
+  }
+
+  protected isAlgorithmSelected(algorithm: FilterAlgorithm): boolean {
+    const current = this.form.controls.filter.controls.selected_algorithms.value as FilterAlgorithm[];
+    return current.includes(algorithm);
+  }
+
+  protected setActiveAlgorithm(algorithm: FilterAlgorithm): void {
+    if (!this.isAlgorithmSelected(algorithm)) {
+      return;
+    }
+    this.form.controls.filter.controls.active_algorithm.setValue(algorithm);
   }
 
   private altitudeFromNedDown(values: number[]): number[] {
@@ -914,11 +968,18 @@ export class App {
     this.renderErrorAltitude(data);
   }
 
+  private activeFilterData(data: SimulationResponse): SimulationResponse['filter_data'] {
+    const active = data.active_filter_algorithm;
+    const fromMap = data.algorithm_outputs?.[active]?.filter_data;
+    return fromMap ?? data.filter_data;
+  }
+
   private renderTrajectory(data: SimulationResponse): void {
+    const activeFilter = this.activeFilterData(data);
     const hasFilterTrajectory = this.hasTrajectoryData(
-      data.filter_data.est_pos_x,
-      data.filter_data.est_pos_y,
-      data.filter_data.est_pos_z
+      activeFilter.est_pos_x,
+      activeFilter.est_pos_y,
+      activeFilter.est_pos_z
     );
     const hasQuantizedTrajectory = this.hasTrajectoryData(
       data.filter_data.quantized_est_pos_x,
@@ -932,9 +993,9 @@ export class App {
     const convertedTrueEast = this.convert(data.position_y, 'distance');
     const convertedTrueNorth = this.convert(data.position_x, 'distance');
     const convertedTrueAltitude = this.convert(data.position_z, 'distance');
-    const convertedEskfEast = hasFilterTrajectory ? this.convert(data.filter_data.est_pos_y, 'distance') : [];
-    const convertedEskfNorth = hasFilterTrajectory ? this.convert(data.filter_data.est_pos_x, 'distance') : [];
-    const convertedEskfAltitude = hasFilterTrajectory ? this.convert(this.altitudeFromNedDown(data.filter_data.est_pos_z), 'distance') : [];
+    const convertedEskfEast = hasFilterTrajectory ? this.convert(activeFilter.est_pos_y, 'distance') : [];
+    const convertedEskfNorth = hasFilterTrajectory ? this.convert(activeFilter.est_pos_x, 'distance') : [];
+    const convertedEskfAltitude = hasFilterTrajectory ? this.convert(this.altitudeFromNedDown(activeFilter.est_pos_z), 'distance') : [];
     const convertedQuantEast = hasQuantizedTrajectory ? this.convert(data.filter_data.quantized_est_pos_y, 'distance') : [];
     const convertedQuantNorth = hasQuantizedTrajectory ? this.convert(data.filter_data.quantized_est_pos_x, 'distance') : [];
     const convertedQuantAltitude = hasQuantizedTrajectory ? this.convert(this.altitudeFromNedDown(data.filter_data.quantized_est_pos_z), 'distance') : [];
@@ -959,7 +1020,7 @@ export class App {
         z: convertedEskfAltitude,
         mode: 'lines',
         type: 'scatter3d',
-        name: 'ESKF',
+        name: FILTER_ALGORITHM_LABELS[(data.active_filter_algorithm as FilterAlgorithm) ?? 'eskf'] ?? 'Estimate',
         line: { color: '#ff8a5b', width: 3, dash: 'dash' },
         opacity: 0.92
       });
@@ -1026,8 +1087,9 @@ export class App {
   }
 
   private renderAltitude(data: SimulationResponse): void {
+    const activeFilter = this.activeFilterData(data);
     const trueAltitude = this.altitudeFromResponse(data);
-    const estimatedAltitude = this.altitudeFromNedDown(data.filter_data.est_pos_z);
+    const estimatedAltitude = this.altitudeFromNedDown(activeFilter.est_pos_z);
     this.render2DChart(
       'chart-altitude',
       data.time,
@@ -1041,10 +1103,11 @@ export class App {
   }
 
   private renderVelocity(data: SimulationResponse): void {
+    const activeFilter = this.activeFilterData(data);
     const estimatedVelocity = this.vectorMagnitude(
-      data.filter_data.est_vel_x,
-      data.filter_data.est_vel_y,
-      data.filter_data.est_vel_z
+      activeFilter.est_vel_x,
+      activeFilter.est_vel_y,
+      activeFilter.est_vel_z
     );
     this.render2DChart(
       'chart-velocity',
@@ -1266,19 +1329,20 @@ export class App {
   }
 
   private renderErrorPosition(data: SimulationResponse): void {
+    const activeFilter = this.activeFilterData(data);
     if (
-      !this.hasCompatibleScalarSeries(data.time, data.filter_data.est_pos_x) ||
-      !this.hasCompatibleScalarSeries(data.time, data.filter_data.est_pos_y) ||
-      !this.hasCompatibleScalarSeries(data.time, data.filter_data.est_pos_z)
+      !this.hasCompatibleScalarSeries(data.time, activeFilter.est_pos_x) ||
+      !this.hasCompatibleScalarSeries(data.time, activeFilter.est_pos_y) ||
+      !this.hasCompatibleScalarSeries(data.time, activeFilter.est_pos_z)
     ) {
       this.clearChart('chart-error-position');
       return;
     }
 
     const trueDown = this.altitudeFromResponse(data).map((value) => -value);
-    const errorNorth = data.filter_data.est_pos_x.map((estimate, index) => estimate - (data.position_x[index] || 0));
-    const errorEast = data.filter_data.est_pos_y.map((estimate, index) => estimate - (data.position_y[index] || 0));
-    const errorDown = data.filter_data.est_pos_z.map((estimate, index) => estimate - (trueDown[index] || 0));
+    const errorNorth = activeFilter.est_pos_x.map((estimate, index) => estimate - (data.position_x[index] || 0));
+    const errorEast = activeFilter.est_pos_y.map((estimate, index) => estimate - (data.position_y[index] || 0));
+    const errorDown = activeFilter.est_pos_z.map((estimate, index) => estimate - (trueDown[index] || 0));
     const suffix = unitSystems[this.units()].distance.suffix;
 
     this.renderMultiSeriesChart(
@@ -1295,18 +1359,19 @@ export class App {
   }
 
   private renderErrorVelocity(data: SimulationResponse): void {
+    const activeFilter = this.activeFilterData(data);
     if (
-      !this.hasCompatibleScalarSeries(data.time, data.filter_data.est_vel_x) ||
-      !this.hasCompatibleScalarSeries(data.time, data.filter_data.est_vel_y) ||
-      !this.hasCompatibleScalarSeries(data.time, data.filter_data.est_vel_z)
+      !this.hasCompatibleScalarSeries(data.time, activeFilter.est_vel_x) ||
+      !this.hasCompatibleScalarSeries(data.time, activeFilter.est_vel_y) ||
+      !this.hasCompatibleScalarSeries(data.time, activeFilter.est_vel_z)
     ) {
       this.clearChart('chart-error-velocity');
       return;
     }
 
-    const errorNorth = data.filter_data.est_vel_x.map((estimate, index) => estimate - (data.velocity_x[index] || 0));
-    const errorEast = data.filter_data.est_vel_y.map((estimate, index) => estimate - (data.velocity_y[index] || 0));
-    const errorDown = data.filter_data.est_vel_z.map((estimate, index) => estimate - (data.velocity_z[index] || 0));
+    const errorNorth = activeFilter.est_vel_x.map((estimate, index) => estimate - (data.velocity_x[index] || 0));
+    const errorEast = activeFilter.est_vel_y.map((estimate, index) => estimate - (data.velocity_y[index] || 0));
+    const errorDown = activeFilter.est_vel_z.map((estimate, index) => estimate - (data.velocity_z[index] || 0));
     const suffix = unitSystems[this.units()].velocity.suffix;
 
     this.renderMultiSeriesChart(
@@ -1323,13 +1388,14 @@ export class App {
   }
 
   private renderErrorAltitude(data: SimulationResponse): void {
-    if (!this.hasCompatibleScalarSeries(data.time, data.filter_data.est_pos_z)) {
+    const activeFilter = this.activeFilterData(data);
+    if (!this.hasCompatibleScalarSeries(data.time, activeFilter.est_pos_z)) {
       this.clearChart('chart-error-altitude');
       return;
     }
 
     const trueAltitude = this.altitudeFromResponse(data);
-    const estimatedAltitude = this.altitudeFromNedDown(data.filter_data.est_pos_z);
+    const estimatedAltitude = this.altitudeFromNedDown(activeFilter.est_pos_z);
     const errorAltitude = estimatedAltitude.map((estimate, index) => estimate - (trueAltitude[index] || 0));
     const suffix = unitSystems[this.units()].distance.suffix;
 
@@ -1848,25 +1914,35 @@ export class App {
 
   private buildStatRows(): StatRow[] {
     const groups = this.response()?.error_stats;
-    if (!groups) {
+    const response = this.response();
+    if (!groups || !response) {
       return [];
     }
-
-    return [
-      ...this.flattenStats('ESKF vs True', groups.eskf),
-      ...this.flattenStats('ESKF vs Quantized', groups.quantized_flight),
-      ...this.flattenStats('True vs Quantized', groups.quant_roundtrip),
-      ...this.flattenStats('Landing Recovery', groups.quant_recovery),
-      ...this.flattenStats('State Detection', groups.state_detection)
-    ];
+    const outputs = response.algorithm_outputs ?? {};
+    const algorithmKeys = Object.keys(outputs).sort() as FilterAlgorithm[];
+    return algorithmKeys.flatMap((algorithmKey) => {
+      const algoStats = outputs[algorithmKey]?.error_stats;
+      if (!algoStats) {
+        return [];
+      }
+      const algorithmLabel = FILTER_ALGORITHM_LABELS[algorithmKey] ?? algorithmKey.toUpperCase();
+      return [
+        ...this.flattenStats(algorithmLabel, 'Estimate vs True', algoStats.eskf),
+        ...this.flattenStats(algorithmLabel, 'Estimate vs Quantized', algoStats.quantized_flight),
+        ...this.flattenStats(algorithmLabel, 'True vs Quantized', algoStats.quant_roundtrip),
+        ...this.flattenStats(algorithmLabel, 'Landing Recovery', algoStats.quant_recovery),
+        ...this.flattenStats(algorithmLabel, 'State Detection', algoStats.state_detection)
+      ];
+    });
   }
 
-  private flattenStats(category: string, group: ErrorStatsGroup | null): StatRow[] {
+  private flattenStats(algorithm: string, category: string, group: ErrorStatsGroup | null): StatRow[] {
     if (!group) {
       return [];
     }
 
     return Object.entries(group).map(([label, stats]) => ({
+      algorithm,
       category,
       label: this.decorateStatLabel(label),
       stats,

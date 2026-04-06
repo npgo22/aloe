@@ -12,6 +12,7 @@ nalgebra.workspace = true
 serde = { workspace = true, features = ["derive"] }
 aloe-core = { path = "../aloe-core" }
 aloe-sim = { path = "../aloe-sim" }
+kalman_filters = { version = "1.0.1", features = ["std"] }
 
 # Server dependencies
 axum = { version = "0.8", features = ["json"] }

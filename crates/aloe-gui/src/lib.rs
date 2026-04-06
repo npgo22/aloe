@@ -22,9 +22,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use kalman_filters::{InformationFilterBuilder, KalmanFilterBuilder};
 use nalgebra::Vector3;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::{LazyLock, Mutex};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -44,7 +46,7 @@ struct SimpleErrorStats {
     n: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct EskfErrorStats {
     pos_n: SimpleErrorStats,
     pos_e: SimpleErrorStats,
@@ -55,7 +57,7 @@ struct EskfErrorStats {
     pos_3d: SimpleErrorStats,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct QuantizedFlightErrorStats {
     pos_n: SimpleErrorStats,
     pos_e: SimpleErrorStats,
@@ -66,7 +68,7 @@ struct QuantizedFlightErrorStats {
     pos_3d: SimpleErrorStats,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct QuantRoundtripErrorStats {
     pos_n: SimpleErrorStats,
     pos_e: SimpleErrorStats,
@@ -76,7 +78,7 @@ struct QuantRoundtripErrorStats {
     vel_d: SimpleErrorStats,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct QuantRecoveryErrorStats {
     lat: SimpleErrorStats,
     lon: SimpleErrorStats,
@@ -84,20 +86,82 @@ struct QuantRecoveryErrorStats {
     horiz: SimpleErrorStats,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct StateDetectionErrorStats {
     burn: SimpleErrorStats,
     coast: SimpleErrorStats,
     rec: SimpleErrorStats,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct ErrorStats {
     eskf: Option<EskfErrorStats>,
     quantized_flight: Option<QuantizedFlightErrorStats>,
     quant_roundtrip: Option<QuantRoundtripErrorStats>,
     quant_recovery: Option<QuantRecoveryErrorStats>,
     state_detection: Option<StateDetectionErrorStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+enum FilterAlgorithm {
+    Eskf,
+    Kalman,
+    Information,
+}
+
+impl FilterAlgorithm {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Eskf => "eskf",
+            Self::Kalman => "kalman",
+            Self::Information => "information",
+        }
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct AlgorithmFilterData {
+    est_pos_x: Vec<f64>,
+    est_pos_y: Vec<f64>,
+    est_pos_z: Vec<f64>,
+    est_vel_x: Vec<f64>,
+    est_vel_y: Vec<f64>,
+    est_vel_z: Vec<f64>,
+    #[serde(skip)]
+    est_vel_mag: Vec<f64>,
+    quantized_est_pos_x: Vec<f64>,
+    quantized_est_pos_y: Vec<f64>,
+    quantized_est_pos_z: Vec<f64>,
+    quantized_est_vel_x: Vec<f64>,
+    quantized_est_vel_y: Vec<f64>,
+    quantized_est_vel_z: Vec<f64>,
+}
+
+impl AlgorithmFilterData {
+    fn empty() -> Self {
+        Self {
+            est_pos_x: vec![],
+            est_pos_y: vec![],
+            est_pos_z: vec![],
+            est_vel_x: vec![],
+            est_vel_y: vec![],
+            est_vel_z: vec![],
+            est_vel_mag: vec![],
+            quantized_est_pos_x: vec![],
+            quantized_est_pos_y: vec![],
+            quantized_est_pos_z: vec![],
+            quantized_est_vel_x: vec![],
+            quantized_est_vel_y: vec![],
+            quantized_est_vel_z: vec![],
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct AlgorithmSimulationOutput {
+    filter_data: AlgorithmFilterData,
+    error_stats: Option<ErrorStats>,
 }
 
 const SCALAR_TARGET_POINTS: usize = 1200;
@@ -258,6 +322,8 @@ struct FilterRequestConfig {
     landing_confirm_window: f64,
     high_velocity_baro_thresh: f64,
     stage_tuning: Vec<StageTuningConfig>,
+    selected_algorithms: Option<Vec<FilterAlgorithm>>,
+    active_algorithm: Option<FilterAlgorithm>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -396,6 +462,12 @@ impl Default for SimConfig {
                         r_mag: 0.002683,
                     },
                 ],
+                selected_algorithms: Some(vec![
+                    FilterAlgorithm::Eskf,
+                    FilterAlgorithm::Kalman,
+                    FilterAlgorithm::Information,
+                ]),
+                active_algorithm: Some(FilterAlgorithm::Eskf),
             },
             options: SimulationOptions {
                 no_sensors: false,
@@ -453,6 +525,9 @@ async fn handle_simulate(Json(config): Json<SimConfig>) -> Json<FullSimulationRe
                 sensor_data: GuiSensorData::empty(),
                 filter_data: FilterData::empty(),
                 error_stats: None,
+                active_filter_algorithm: "eskf".to_string(),
+                available_filter_algorithms: vec![],
+                algorithm_outputs: BTreeMap::new(),
                 true_accel_x: vec![],
                 true_accel_y: vec![],
                 true_accel_z: vec![],
@@ -488,6 +563,9 @@ async fn handle_simulate(Json(config): Json<SimConfig>) -> Json<FullSimulationRe
                 sensor_data: GuiSensorData::empty(),
                 filter_data: FilterData::empty(),
                 error_stats: None,
+                active_filter_algorithm: "eskf".to_string(),
+                available_filter_algorithms: vec![],
+                algorithm_outputs: BTreeMap::new(),
                 true_accel_x: vec![],
                 true_accel_y: vec![],
                 true_accel_z: vec![],
@@ -558,6 +636,9 @@ struct FullSimulationResponse {
     sensor_data: GuiSensorData,
     filter_data: FilterData,
     error_stats: Option<ErrorStats>,
+    active_filter_algorithm: String,
+    available_filter_algorithms: Vec<String>,
+    algorithm_outputs: BTreeMap<String, AlgorithmSimulationOutput>,
     // True sensor values (perfect, no noise)
     true_accel_x: Vec<f64>,
     true_accel_y: Vec<f64>,
@@ -704,6 +785,335 @@ fn align_ground_truth(sim_time: &[f64], sim_data: &[f64], filter_time: &[f64]) -
         aligned.push(v0 + frac * (v1 - v0));
     }
     aligned
+}
+
+fn compute_quantized_from_estimates(
+    est_pos_x: &[f64],
+    est_pos_y: &[f64],
+    est_pos_z: &[f64],
+    est_vel_x: &[f64],
+    est_vel_y: &[f64],
+    est_vel_z: &[f64],
+) -> AlgorithmFilterData {
+    let est_vel_mag: Vec<f64> = est_vel_x
+        .iter()
+        .zip(est_vel_y)
+        .zip(est_vel_z)
+        .map(|((x, y), z)| (x * x + y * y + z * z).sqrt())
+        .collect();
+
+    let quantized_est_pos_x: Vec<f64> = est_pos_x.iter().map(|&x| x as i16 as f64).collect();
+    let quantized_est_pos_y: Vec<f64> = est_pos_y.iter().map(|&y| y as i16 as f64).collect();
+    let quantized_est_pos_z: Vec<f64> = est_pos_z
+        .iter()
+        .map(|&z| ((z * 100.0) as i32 as f64) / 100.0)
+        .collect();
+
+    let quantized_est_vel_x: Vec<f64> = est_vel_x
+        .iter()
+        .map(|&vx| ((vx * 10.0) as i16 as f64) / 10.0)
+        .collect();
+    let quantized_est_vel_y: Vec<f64> = est_vel_y
+        .iter()
+        .map(|&vy| ((vy * 10.0) as i16 as f64) / 10.0)
+        .collect();
+    let quantized_est_vel_z: Vec<f64> = est_vel_z
+        .iter()
+        .map(|&vz| ((vz * 10.0) as i16 as f64) / 10.0)
+        .collect();
+
+    AlgorithmFilterData {
+        est_pos_x: est_pos_x.to_vec(),
+        est_pos_y: est_pos_y.to_vec(),
+        est_pos_z: est_pos_z.to_vec(),
+        est_vel_x: est_vel_x.to_vec(),
+        est_vel_y: est_vel_y.to_vec(),
+        est_vel_z: est_vel_z.to_vec(),
+        est_vel_mag,
+        quantized_est_pos_x,
+        quantized_est_pos_y,
+        quantized_est_pos_z,
+        quantized_est_vel_x,
+        quantized_est_vel_y,
+        quantized_est_vel_z,
+    }
+}
+
+fn build_algorithm_output(
+    filter_data: AlgorithmFilterData,
+    sim_result: &aloe_sim::sim::SimResult,
+    filter_time: &[f64],
+    transitions: (Option<f64>, Option<f64>, Option<f64>),
+    home: (f64, f64, f64),
+) -> AlgorithmSimulationOutput {
+    let true_pos_z: Vec<f64> = sim_result.pos.iter().map(|p| p.z).collect();
+    let true_vel_x: Vec<f64> = sim_result.vel.iter().map(|v| v.x).collect();
+    let true_vel_y: Vec<f64> = sim_result.vel.iter().map(|v| v.y).collect();
+    let true_vel_z: Vec<f64> = sim_result.vel.iter().map(|v| v.z).collect();
+    let true_pos_n: Vec<f64> = sim_result.pos.iter().map(|p| p.x).collect();
+    let true_pos_e: Vec<f64> = sim_result.pos.iter().map(|p| p.y).collect();
+
+    let aligned_true_pos_n = align_ground_truth(&sim_result.time, &true_pos_n, filter_time);
+    let aligned_true_pos_e = align_ground_truth(&sim_result.time, &true_pos_e, filter_time);
+    let aligned_true_pos_z = align_ground_truth(&sim_result.time, &true_pos_z, filter_time);
+    let aligned_true_vel_x = align_ground_truth(&sim_result.time, &true_vel_x, filter_time);
+    let aligned_true_vel_y = align_ground_truth(&sim_result.time, &true_vel_y, filter_time);
+    let aligned_true_vel_z = align_ground_truth(&sim_result.time, &true_vel_z, filter_time);
+
+    let error_stats = calculate_error_stats(
+        PositionData {
+            x: &aligned_true_pos_n,
+            y: &aligned_true_pos_e,
+            z: &aligned_true_pos_z,
+        },
+        PositionData {
+            x: &filter_data.est_pos_x,
+            y: &filter_data.est_pos_y,
+            z: &filter_data.est_pos_z,
+        },
+        PositionData {
+            x: &filter_data.quantized_est_pos_x,
+            y: &filter_data.quantized_est_pos_y,
+            z: &filter_data.quantized_est_pos_z,
+        },
+        VelocityData {
+            x: &aligned_true_vel_x,
+            y: &aligned_true_vel_y,
+            z: &aligned_true_vel_z,
+        },
+        VelocityData {
+            x: &filter_data.est_vel_x,
+            y: &filter_data.est_vel_y,
+            z: &filter_data.est_vel_z,
+        },
+        VelocityData {
+            x: &filter_data.quantized_est_vel_x,
+            y: &filter_data.quantized_est_vel_y,
+            z: &filter_data.quantized_est_vel_z,
+        },
+        sim_result.ascent_time,
+        sim_result.coast_time,
+        sim_result.descent_time,
+        transitions.0,
+        transitions.1,
+        transitions.2,
+        home.0,
+        home.1,
+        home.2,
+    );
+
+    AlgorithmSimulationOutput {
+        filter_data,
+        error_stats: Some(error_stats),
+    }
+}
+
+fn run_kalman_filter_algorithm(
+    sensor_data: &aloe_sim::sensor::SensorData,
+    filter_config: &FilterConfig,
+) -> Option<AlgorithmFilterData> {
+    let state_dim = 6usize;
+    let measurement_dim = 6usize;
+    let dt = 0.001_f64;
+
+    let transition = vec![
+        1.0, 0.0, 0.0, dt, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, dt, 0.0, //
+        0.0, 0.0, 1.0, 0.0, 0.0, dt, //
+        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, //
+    ];
+    let mut q = vec![0.0_f64; state_dim * state_dim];
+    for i in 0..3 {
+        q[i * state_dim + i] = filter_config.pos_process_noise[0].max(1e-6);
+    }
+    for i in 3..6 {
+        q[i * state_dim + i] = filter_config.r_gps_vel[0].max(1e-6);
+    }
+    let h = vec![
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, //
+    ];
+    let mut r = vec![0.0_f64; measurement_dim * measurement_dim];
+    for i in 0..3 {
+        r[i * measurement_dim + i] = filter_config.r_gps_pos[0].max(1e-6);
+    }
+    for i in 3..6 {
+        r[i * measurement_dim + i] = filter_config.r_gps_vel[0].max(1e-6);
+    }
+    let mut p0 = vec![0.0_f64; state_dim * state_dim];
+    for i in 0..state_dim {
+        p0[i * state_dim + i] = 100.0;
+    }
+
+    let mut filter = match KalmanFilterBuilder::<f64>::new(state_dim, measurement_dim)
+        .initial_state(vec![0.0; state_dim])
+        .initial_covariance(p0)
+        .transition_matrix(transition)
+        .process_noise(q)
+        .observation_matrix(h)
+        .measurement_noise(r)
+        .build()
+    {
+        Ok(f) => f,
+        Err(err) => {
+            warn!("Kalman filter initialization failed: {err}");
+            return None;
+        }
+    };
+
+    let mut est_pos_x = Vec::with_capacity(sensor_data.time.len());
+    let mut est_pos_y = Vec::with_capacity(sensor_data.time.len());
+    let mut est_pos_z = Vec::with_capacity(sensor_data.time.len());
+    let mut est_vel_x = Vec::with_capacity(sensor_data.time.len());
+    let mut est_vel_y = Vec::with_capacity(sensor_data.time.len());
+    let mut est_vel_z = Vec::with_capacity(sensor_data.time.len());
+
+    let mut last_pos = Vector3::zeros();
+    let mut last_vel = Vector3::zeros();
+    for i in 0..sensor_data.time.len() {
+        let _ = filter.predict();
+        if let (Some(gps_pos), Some(gps_vel)) = (sensor_data.gps_pos[i], sensor_data.gps_vel[i]) {
+            last_pos = gps_pos;
+            last_vel = gps_vel;
+            let _ = filter.update(&[
+                gps_pos.x, gps_pos.y, gps_pos.z, gps_vel.x, gps_vel.y, gps_vel.z,
+            ]);
+        }
+
+        let x = &filter.x;
+        if x.len() == state_dim {
+            est_pos_x.push(x[0]);
+            est_pos_y.push(x[1]);
+            est_pos_z.push(x[2]);
+            est_vel_x.push(x[3]);
+            est_vel_y.push(x[4]);
+            est_vel_z.push(x[5]);
+        } else {
+            est_pos_x.push(last_pos.x);
+            est_pos_y.push(last_pos.y);
+            est_pos_z.push(last_pos.z);
+            est_vel_x.push(last_vel.x);
+            est_vel_y.push(last_vel.y);
+            est_vel_z.push(last_vel.z);
+        }
+    }
+
+    Some(compute_quantized_from_estimates(
+        &est_pos_x, &est_pos_y, &est_pos_z, &est_vel_x, &est_vel_y, &est_vel_z,
+    ))
+}
+
+fn run_information_filter_algorithm(
+    sensor_data: &aloe_sim::sensor::SensorData,
+    filter_config: &FilterConfig,
+) -> Option<AlgorithmFilterData> {
+    let state_dim = 6usize;
+    let measurement_dim = 6usize;
+    let dt = 0.001_f64;
+    let mut p0 = vec![0.0_f64; state_dim * state_dim];
+    for i in 0..state_dim {
+        p0[i * state_dim + i] = 100.0;
+    }
+    let mut y0 = vec![0.0_f64; state_dim * state_dim];
+    for i in 0..state_dim {
+        y0[i * state_dim + i] = 1.0 / p0[i * state_dim + i];
+    }
+
+    let transition = vec![
+        1.0, 0.0, 0.0, dt, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, dt, 0.0, //
+        0.0, 0.0, 1.0, 0.0, 0.0, dt, //
+        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, //
+    ];
+    let mut q = vec![0.0_f64; state_dim * state_dim];
+    for i in 0..3 {
+        q[i * state_dim + i] = filter_config.pos_process_noise[0].max(1e-6);
+    }
+    for i in 3..6 {
+        q[i * state_dim + i] = filter_config.r_gps_vel[0].max(1e-6);
+    }
+    let h = vec![
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, //
+    ];
+    let mut r = vec![0.0_f64; measurement_dim * measurement_dim];
+    for i in 0..3 {
+        r[i * measurement_dim + i] = filter_config.r_gps_pos[0].max(1e-6);
+    }
+    for i in 3..6 {
+        r[i * measurement_dim + i] = filter_config.r_gps_vel[0].max(1e-6);
+    }
+
+    let mut filter = match InformationFilterBuilder::<f64>::new(state_dim, measurement_dim)
+        .initial_information_matrix(y0)
+        .initial_information_vector(vec![0.0; state_dim])
+        .state_transition_matrix(transition)
+        .process_noise(q)
+        .observation_matrix(h)
+        .measurement_noise(r)
+        .build()
+    {
+        Ok(f) => f,
+        Err(err) => {
+            warn!("Information filter initialization failed: {err}");
+            return None;
+        }
+    };
+
+    let mut est_pos_x = Vec::with_capacity(sensor_data.time.len());
+    let mut est_pos_y = Vec::with_capacity(sensor_data.time.len());
+    let mut est_pos_z = Vec::with_capacity(sensor_data.time.len());
+    let mut est_vel_x = Vec::with_capacity(sensor_data.time.len());
+    let mut est_vel_y = Vec::with_capacity(sensor_data.time.len());
+    let mut est_vel_z = Vec::with_capacity(sensor_data.time.len());
+
+    let mut last_pos = Vector3::zeros();
+    let mut last_vel = Vector3::zeros();
+    for i in 0..sensor_data.time.len() {
+        let _ = filter.predict();
+        if let (Some(gps_pos), Some(gps_vel)) = (sensor_data.gps_pos[i], sensor_data.gps_vel[i]) {
+            last_pos = gps_pos;
+            last_vel = gps_vel;
+            let _ = filter.update(&[
+                gps_pos.x, gps_pos.y, gps_pos.z, gps_vel.x, gps_vel.y, gps_vel.z,
+            ]);
+        }
+
+        match filter.get_state() {
+            Ok(state) if state.len() == state_dim => {
+                est_pos_x.push(state[0]);
+                est_pos_y.push(state[1]);
+                est_pos_z.push(state[2]);
+                est_vel_x.push(state[3]);
+                est_vel_y.push(state[4]);
+                est_vel_z.push(state[5]);
+            }
+            _ => {
+                est_pos_x.push(last_pos.x);
+                est_pos_y.push(last_pos.y);
+                est_pos_z.push(last_pos.z);
+                est_vel_x.push(last_vel.x);
+                est_vel_y.push(last_vel.y);
+                est_vel_z.push(last_vel.z);
+            }
+        }
+    }
+
+    Some(compute_quantized_from_estimates(
+        &est_pos_x, &est_pos_y, &est_pos_z, &est_vel_x, &est_vel_y, &est_vel_z,
+    ))
 }
 
 /// Run full 6-DOF simulation
@@ -889,6 +1299,9 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             sensor_data: GuiSensorData::empty(),
             filter_data: FilterData::empty(),
             error_stats: None,
+            active_filter_algorithm: "eskf".to_string(),
+            available_filter_algorithms: vec![],
+            algorithm_outputs: BTreeMap::new(),
             true_accel_x: vec![],
             true_accel_y: vec![],
             true_accel_z: vec![],
@@ -1128,86 +1541,79 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
                 .map(|stage| stage.r_mag)
                 .collect(),
         };
-        let (filter_data, state_changes_eskf, error_stats) = if config.options.no_filter {
+        let (
+            filter_data,
+            state_changes_eskf,
+            error_stats,
+            active_filter_algorithm,
+            available_filter_algorithms,
+            algorithm_outputs,
+        ) = if config.options.no_filter {
             info!("Filter DISABLED by config.");
-            (FilterData::empty(), vec![], None)
+            (
+                FilterData::empty(),
+                vec![],
+                None,
+                "eskf".to_string(),
+                vec![],
+                BTreeMap::new(),
+            )
         } else {
+            let requested_algorithms = config
+                .filter
+                .selected_algorithms
+                .clone()
+                .unwrap_or_else(|| vec![FilterAlgorithm::Eskf]);
+            let mut available_filter_algorithms: Vec<String> = requested_algorithms
+                .iter()
+                .map(FilterAlgorithm::as_str)
+                .map(str::to_string)
+                .collect();
+            if available_filter_algorithms.is_empty() {
+                available_filter_algorithms.push(FilterAlgorithm::Eskf.as_str().to_string());
+            }
+            let requested_active = config
+                .filter
+                .active_algorithm
+                .clone()
+                .unwrap_or(FilterAlgorithm::Eskf)
+                .as_str()
+                .to_string();
+
             let filter_result = run_filter(&sim_result, &sensor_data_sim, &filter_config);
             debug!("Filter Result Steps: {}", filter_result.position.len());
-
-            let filter_data_temp = FilterData {
-                est_pos_x: filter_result.position.iter().map(|p| p.x).collect(),
-                est_pos_y: filter_result.position.iter().map(|p| p.y).collect(),
-                est_pos_z: filter_result.position.iter().map(|p| p.z).collect(),
-                est_vel_x: filter_result.velocity.iter().map(|v| v.x).collect(),
-                est_vel_y: filter_result.velocity.iter().map(|v| v.y).collect(),
-                est_vel_z: filter_result.velocity.iter().map(|v| v.z).collect(),
-                est_vel_mag: vec![],
-                quantized_est_pos_x: vec![],
-                quantized_est_pos_y: vec![],
-                quantized_est_pos_z: vec![],
-                quantized_est_vel_x: vec![],
-                quantized_est_vel_y: vec![],
-                quantized_est_vel_z: vec![],
-            };
-
-            let est_vel_mag: Vec<f64> = filter_data_temp
-                .est_vel_x
-                .iter()
-                .zip(&filter_data_temp.est_vel_y)
-                .zip(&filter_data_temp.est_vel_z)
-                .map(|((x, y), z)| (x * x + y * y + z * z).sqrt())
-                .collect();
-
-            // Compute quantized positions
-            let quantized_est_pos_x: Vec<f64> = filter_data_temp
-                .est_pos_x
-                .iter()
-                .map(|&x| x as i16 as f64)
-                .collect();
-            let quantized_est_pos_y: Vec<f64> = filter_data_temp
-                .est_pos_y
-                .iter()
-                .map(|&y| y as i16 as f64)
-                .collect();
-            let quantized_est_pos_z: Vec<f64> = filter_data_temp
-                .est_pos_z
-                .iter()
-                .map(|&z| ((z * 100.0) as i32 as f64) / 100.0)
-                .collect();
-
-            // Compute quantized velocities (stored as i16 in dm/s, per FlightData in quantize.rs)
-            let quantized_est_vel_x: Vec<f64> = filter_data_temp
-                .est_vel_x
-                .iter()
-                .map(|&vx| ((vx * 10.0) as i16 as f64) / 10.0)
-                .collect();
-            let quantized_est_vel_y: Vec<f64> = filter_data_temp
-                .est_vel_y
-                .iter()
-                .map(|&vy| ((vy * 10.0) as i16 as f64) / 10.0)
-                .collect();
-            let quantized_est_vel_z: Vec<f64> = filter_data_temp
-                .est_vel_z
-                .iter()
-                .map(|&vz| ((vz * 10.0) as i16 as f64) / 10.0)
-                .collect();
-
-            let filter_data = FilterData {
-                est_pos_x: filter_data_temp.est_pos_x,
-                est_pos_y: filter_data_temp.est_pos_y,
-                est_pos_z: filter_data_temp.est_pos_z,
-                est_vel_x: filter_data_temp.est_vel_x,
-                est_vel_y: filter_data_temp.est_vel_y,
-                est_vel_z: filter_data_temp.est_vel_z,
-                est_vel_mag,
-                quantized_est_pos_x,
-                quantized_est_pos_y,
-                quantized_est_pos_z,
-                quantized_est_vel_x,
-                quantized_est_vel_y,
-                quantized_est_vel_z,
-            };
+            let eskf_algorithm_data = compute_quantized_from_estimates(
+                &filter_result
+                    .position
+                    .iter()
+                    .map(|p| p.x)
+                    .collect::<Vec<_>>(),
+                &filter_result
+                    .position
+                    .iter()
+                    .map(|p| p.y)
+                    .collect::<Vec<_>>(),
+                &filter_result
+                    .position
+                    .iter()
+                    .map(|p| p.z)
+                    .collect::<Vec<_>>(),
+                &filter_result
+                    .velocity
+                    .iter()
+                    .map(|v| v.x)
+                    .collect::<Vec<_>>(),
+                &filter_result
+                    .velocity
+                    .iter()
+                    .map(|v| v.y)
+                    .collect::<Vec<_>>(),
+                &filter_result
+                    .velocity
+                    .iter()
+                    .map(|v| v.z)
+                    .collect::<Vec<_>>(),
+            );
 
             let state_changes_eskf = generate_state_changes(
                 &filter_result.time,
@@ -1218,65 +1624,112 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
                 filter_result.descent_time,
             );
 
-            debug!("Calculating Error Stats...");
-            let true_pos_z: Vec<f64> = sim_result.pos.iter().map(|p| p.z).collect();
-            let true_vel_x: Vec<f64> = sim_result.vel.iter().map(|v| v.x).collect();
-            let true_vel_y: Vec<f64> = sim_result.vel.iter().map(|v| v.y).collect();
-            let true_vel_z: Vec<f64> = sim_result.vel.iter().map(|v| v.z).collect();
-            let true_pos_n: Vec<f64> = sim_result.pos.iter().map(|p| p.x).collect();
-            let true_pos_e: Vec<f64> = sim_result.pos.iter().map(|p| p.y).collect();
+            let mut algorithm_outputs: BTreeMap<String, AlgorithmSimulationOutput> =
+                BTreeMap::new();
+            if requested_algorithms.contains(&FilterAlgorithm::Eskf) {
+                algorithm_outputs.insert(
+                    FilterAlgorithm::Eskf.as_str().to_string(),
+                    build_algorithm_output(
+                        eskf_algorithm_data.clone(),
+                        &sim_result,
+                        &filter_result.time,
+                        (
+                            filter_result.ascent_time,
+                            filter_result.coast_time,
+                            filter_result.descent_time,
+                        ),
+                        (
+                            filter_config.home_lat_deg,
+                            filter_config.home_lon_deg,
+                            filter_config.home_alt_m,
+                        ),
+                    ),
+                );
+            }
+            if requested_algorithms.contains(&FilterAlgorithm::Kalman) {
+                if let Some(data) = run_kalman_filter_algorithm(&sensor_data_sim, &filter_config) {
+                    algorithm_outputs.insert(
+                        FilterAlgorithm::Kalman.as_str().to_string(),
+                        build_algorithm_output(
+                            data,
+                            &sim_result,
+                            &filter_result.time,
+                            (
+                                filter_result.ascent_time,
+                                filter_result.coast_time,
+                                filter_result.descent_time,
+                            ),
+                            (
+                                filter_config.home_lat_deg,
+                                filter_config.home_lon_deg,
+                                filter_config.home_alt_m,
+                            ),
+                        ),
+                    );
+                }
+            }
+            if requested_algorithms.contains(&FilterAlgorithm::Information) {
+                if let Some(data) =
+                    run_information_filter_algorithm(&sensor_data_sim, &filter_config)
+                {
+                    algorithm_outputs.insert(
+                        FilterAlgorithm::Information.as_str().to_string(),
+                        build_algorithm_output(
+                            data,
+                            &sim_result,
+                            &filter_result.time,
+                            (
+                                filter_result.ascent_time,
+                                filter_result.coast_time,
+                                filter_result.descent_time,
+                            ),
+                            (
+                                filter_config.home_lat_deg,
+                                filter_config.home_lon_deg,
+                                filter_config.home_alt_m,
+                            ),
+                        ),
+                    );
+                }
+            }
 
-            let filter_time = &filter_result.time;
-            let aligned_true_pos_n = align_ground_truth(&sim_result.time, &true_pos_n, filter_time);
-            let aligned_true_pos_e = align_ground_truth(&sim_result.time, &true_pos_e, filter_time);
-            let aligned_true_pos_z = align_ground_truth(&sim_result.time, &true_pos_z, filter_time);
-            let aligned_true_vel_x = align_ground_truth(&sim_result.time, &true_vel_x, filter_time);
-            let aligned_true_vel_y = align_ground_truth(&sim_result.time, &true_vel_y, filter_time);
-            let aligned_true_vel_z = align_ground_truth(&sim_result.time, &true_vel_z, filter_time);
+            let active_filter_algorithm = if algorithm_outputs.contains_key(&requested_active) {
+                requested_active
+            } else {
+                FilterAlgorithm::Eskf.as_str().to_string()
+            };
+            let selected_output = algorithm_outputs
+                .get(&active_filter_algorithm)
+                .or_else(|| algorithm_outputs.get(FilterAlgorithm::Eskf.as_str()));
+            let selected_data = selected_output
+                .map(|s| s.filter_data.clone())
+                .unwrap_or_else(AlgorithmFilterData::empty);
+            let filter_data = FilterData {
+                est_pos_x: selected_data.est_pos_x,
+                est_pos_y: selected_data.est_pos_y,
+                est_pos_z: selected_data.est_pos_z,
+                est_vel_x: selected_data.est_vel_x,
+                est_vel_y: selected_data.est_vel_y,
+                est_vel_z: selected_data.est_vel_z,
+                est_vel_mag: selected_data.est_vel_mag,
+                quantized_est_pos_x: selected_data.quantized_est_pos_x,
+                quantized_est_pos_y: selected_data.quantized_est_pos_y,
+                quantized_est_pos_z: selected_data.quantized_est_pos_z,
+                quantized_est_vel_x: selected_data.quantized_est_vel_x,
+                quantized_est_vel_y: selected_data.quantized_est_vel_y,
+                quantized_est_vel_z: selected_data.quantized_est_vel_z,
+            };
+            let error_stats = selected_output.and_then(|s| s.error_stats.clone());
+            available_filter_algorithms = algorithm_outputs.keys().cloned().collect();
 
-            let error_stats = calculate_error_stats(
-                PositionData {
-                    x: &aligned_true_pos_n,
-                    y: &aligned_true_pos_e,
-                    z: &aligned_true_pos_z,
-                },
-                PositionData {
-                    x: &filter_data.est_pos_x,
-                    y: &filter_data.est_pos_y,
-                    z: &filter_data.est_pos_z,
-                },
-                PositionData {
-                    x: &filter_data.quantized_est_pos_x,
-                    y: &filter_data.quantized_est_pos_y,
-                    z: &filter_data.quantized_est_pos_z,
-                },
-                VelocityData {
-                    x: &aligned_true_vel_x,
-                    y: &aligned_true_vel_y,
-                    z: &aligned_true_vel_z,
-                },
-                VelocityData {
-                    x: &filter_data.est_vel_x,
-                    y: &filter_data.est_vel_y,
-                    z: &filter_data.est_vel_z,
-                },
-                VelocityData {
-                    x: &filter_data.quantized_est_vel_x,
-                    y: &filter_data.quantized_est_vel_y,
-                    z: &filter_data.quantized_est_vel_z,
-                },
-                sim_result.ascent_time,
-                sim_result.coast_time,
-                sim_result.descent_time,
-                filter_result.ascent_time,
-                filter_result.coast_time,
-                filter_result.descent_time,
-                filter_config.home_lat_deg,
-                filter_config.home_lon_deg,
-                filter_config.home_alt_m,
-            );
-
-            (filter_data, state_changes_eskf, Some(error_stats))
+            (
+                filter_data,
+                state_changes_eskf,
+                error_stats,
+                active_filter_algorithm,
+                available_filter_algorithms,
+                algorithm_outputs,
+            )
         };
 
         debug!("=== BEFORE DOWNSAMPLING ===");
@@ -1423,6 +1876,9 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
             sensor_data,
             filter_data,
             error_stats,
+            active_filter_algorithm,
+            available_filter_algorithms,
+            algorithm_outputs,
             true_accel_x,
             true_accel_y,
             true_accel_z,

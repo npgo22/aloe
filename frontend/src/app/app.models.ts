@@ -19,6 +19,8 @@ export interface StageTuning {
   r_mag: number;
 }
 
+export type FilterAlgorithm = 'eskf' | 'kalman' | 'information';
+
 export interface SimulationRequest {
   rocket: {
     dry_mass: number;
@@ -91,6 +93,8 @@ export interface SimulationRequest {
     landing_confirm_window: number;
     high_velocity_baro_thresh: number;
     stage_tuning: StageTuning[];
+    selected_algorithms: FilterAlgorithm[];
+    active_algorithm: FilterAlgorithm;
   };
   options: {
     no_sensors: boolean;
@@ -170,6 +174,15 @@ export interface SimulationResponse {
     quant_recovery: ErrorStatsGroup | null;
     state_detection: ErrorStatsGroup | null;
   } | null;
+  active_filter_algorithm: FilterAlgorithm;
+  available_filter_algorithms: FilterAlgorithm[];
+  algorithm_outputs: Record<
+    string,
+    {
+      filter_data: SimulationResponse['filter_data'];
+      error_stats: SimulationResponse['error_stats'];
+    }
+  >;
   true_accel_x: number[];
   true_accel_y: number[];
   true_accel_z: number[];
@@ -191,6 +204,7 @@ export interface StateChange {
 
 export interface StatRow {
   category: string;
+  algorithm: string;
   label: string;
   stats: SimpleErrorStats;
   unit?: 'distance' | 'velocity' | 'time' | 'angle';
@@ -281,6 +295,8 @@ export const DEFAULT_REQUEST: SimulationRequest = {
     landing_alt_thresh: 100,
     landing_confirm_window: 2,
     high_velocity_baro_thresh: 170,
+    selected_algorithms: ['eskf', 'kalman', 'information'],
+    active_algorithm: 'eskf',
     stage_tuning: [
       {
         accel_noise_density: 0.2236,

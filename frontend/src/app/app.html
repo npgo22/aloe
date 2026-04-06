@@ -106,6 +106,40 @@
             </div>
           </div>
           <div class="subsection" [formGroup]="form.controls.filter">
+            <div class="subsection-heading">Algorithms</div>
+            <div class="toggle-grid">
+              <label class="toggle-item" *ngFor="let algorithm of algorithmToggleFields">
+                <p-checkbox
+                  [binary]="true"
+                  [ngModel]="isAlgorithmSelected(algorithm.key)"
+                  (ngModelChange)="toggleAlgorithm(algorithm.key, !!$event)"
+                  [ngModelOptions]="{ standalone: true }"
+                ></p-checkbox>
+                <span>{{ algorithm.label }}</span>
+              </label>
+            </div>
+            <div class="field-grid" style="margin-top: 0.75rem;">
+              <div class="field">
+                <label for="active_algorithm">Active Algorithm</label>
+                <select
+                  id="active_algorithm"
+                  class="number-input"
+                  [ngModel]="form.controls.filter.controls.active_algorithm.value"
+                  (ngModelChange)="setActiveAlgorithm($event)"
+                  [ngModelOptions]="{ standalone: true }"
+                >
+                  <option
+                    *ngFor="let option of algorithmOptions"
+                    [value]="option.value"
+                    [disabled]="!isAlgorithmSelected(option.value)"
+                  >
+                    {{ option.label }}
+                  </option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div class="subsection" [formGroup]="form.controls.filter">
             <div class="subsection-heading">Reference Inputs</div>
             <div class="field-grid">
               <div class="field" *ngFor="let field of filterFields">
@@ -218,6 +252,7 @@
           <p-table [value]="statRows()" [tableStyle]="{ 'min-width': '64rem' }">
             <ng-template #header>
               <tr>
+                <th>Algorithm</th>
                 <th>Category</th>
                 <th>Metric</th>
                 <th>Mean</th>
@@ -230,6 +265,7 @@
             </ng-template>
             <ng-template #body let-row>
               <tr>
+                <td>{{ row.algorithm }}</td>
                 <td>{{ row.category }}</td>
                 <td>{{ row.label }}</td>
                 <td>{{ formatStatValue(row, row.stats.mean) }}</td>
