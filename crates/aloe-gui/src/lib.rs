@@ -514,10 +514,7 @@ async fn handle_static(Path(path): Path<String>) -> impl IntoResponse {
     } else {
         path.as_str()
     };
-    match FrontendAssets::get(normalized) {
-        Some(_) => serve_embedded_asset(normalized),
-        None => serve_embedded_asset("index.html"),
-    }
+    serve_embedded_asset(normalized)
 }
 
 fn serve_embedded_asset(path: &str) -> Response<Body> {
@@ -535,7 +532,10 @@ fn serve_embedded_asset(path: &str) -> Response<Body> {
 
     Response::builder()
         .status(StatusCode::NOT_FOUND)
-        .body(Body::empty())
+        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Body::from(format!(
+            "Embedded frontend asset not found: {path}"
+        )))
         .expect("response builder should not fail")
 }
 
