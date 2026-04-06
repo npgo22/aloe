@@ -21,9 +21,9 @@ enum Commands {
     },
     /// Launch web GUI
     Gui {
-        /// Port to bind to
-        #[arg(short, long, default_value_t = 8080)]
-        port: u16,
+        /// Port to bind to (defaults to $PORT, else 8080)
+        #[arg(short, long)]
+        port: Option<u16>,
 
         /// Host to bind to
         #[arg(short = 'H', long, default_value = "0.0.0.0")]
@@ -43,10 +43,10 @@ fn main() -> anyhow::Result<()> {
             let cli_args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             run_cli(&cli_args)
         }
-        Some(Commands::Gui { port, host }) => run_gui(port, &host),
+        Some(Commands::Gui { port, host }) => run_gui(resolve_port(port), &host),
         None => {
             // Default to GUI mode
-            run_gui(8080, "0.0.0.0")
+            run_gui(resolve_port(None), "0.0.0.0")
         }
     };
 
@@ -85,4 +85,15 @@ fn run_gui(port: u16, host: &str) -> anyhow::Result<()> {
         axum::serve(listener, app).await?;
         Ok(())
     })
+}
+
+fn resolve_port(cli_port: Option<u16>) -> u16 {
+    if let Some(port) = cli_port {
+        return port;
+    }
+
+    std::env::var("PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(8080)
 }
