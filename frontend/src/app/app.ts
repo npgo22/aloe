@@ -1925,7 +1925,7 @@ export class App {
       if (!algoStats) {
         return [];
       }
-      const algorithmLabel = FILTER_ALGORITHM_LABELS[algorithmKey] ?? algorithmKey.toUpperCase();
+      const algorithmLabel = FILTER_ALGORITHM_LABELS[algorithmKey];
       return [
         ...this.flattenStats(algorithmLabel, 'Estimate vs True', algoStats.eskf),
         ...this.flattenStats(algorithmLabel, 'Estimate vs Quantized', algoStats.quantized_flight),

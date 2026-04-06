@@ -165,6 +165,9 @@ struct AlgorithmSimulationOutput {
 }
 
 const SCALAR_TARGET_POINTS: usize = 1200;
+const AUX_FILTER_STATE_DIM: usize = 6;
+const AUX_FILTER_MEASUREMENT_DIM: usize = 6;
+const AUX_FILTER_TIMESTEP_S: f64 = 0.001;
 
 #[derive(Clone)]
 struct SimCacheEntry {
@@ -839,6 +842,52 @@ fn compute_quantized_from_estimates(
     }
 }
 
+fn constant_velocity_transition_matrix(dt: f64) -> Vec<f64> {
+    vec![
+        1.0, 0.0, 0.0, dt, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, dt, 0.0, //
+        0.0, 0.0, 1.0, 0.0, 0.0, dt, //
+        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, //
+    ]
+}
+
+fn identity6() -> Vec<f64> {
+    vec![
+        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
+        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, //
+    ]
+}
+
+fn build_aux_process_noise(filter_config: &FilterConfig) -> Vec<f64> {
+    let mut q = vec![0.0_f64; AUX_FILTER_STATE_DIM * AUX_FILTER_STATE_DIM];
+    // Auxiliary linear filters currently use one global tuning profile (stage 0).
+    for i in 0..3 {
+        q[i * AUX_FILTER_STATE_DIM + i] = filter_config.pos_process_noise[0].max(1e-6);
+    }
+    for i in 3..6 {
+        q[i * AUX_FILTER_STATE_DIM + i] = filter_config.r_gps_vel[0].max(1e-6);
+    }
+    q
+}
+
+fn build_aux_measurement_noise(filter_config: &FilterConfig) -> Vec<f64> {
+    let mut r = vec![0.0_f64; AUX_FILTER_MEASUREMENT_DIM * AUX_FILTER_MEASUREMENT_DIM];
+    // Auxiliary linear filters currently use one global tuning profile (stage 0).
+    for i in 0..3 {
+        r[i * AUX_FILTER_MEASUREMENT_DIM + i] = filter_config.r_gps_pos[0].max(1e-6);
+    }
+    for i in 3..6 {
+        r[i * AUX_FILTER_MEASUREMENT_DIM + i] = filter_config.r_gps_vel[0].max(1e-6);
+    }
+    r
+}
+
 fn build_algorithm_output(
     filter_data: AlgorithmFilterData,
     sim_result: &aloe_sim::sim::SimResult,
@@ -912,60 +961,31 @@ fn run_kalman_filter_algorithm(
     sensor_data: &aloe_sim::sensor::SensorData,
     filter_config: &FilterConfig,
 ) -> Option<AlgorithmFilterData> {
-    let state_dim = 6usize;
-    let measurement_dim = 6usize;
-    let dt = 0.001_f64;
-
-    let transition = vec![
-        1.0, 0.0, 0.0, dt, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, dt, 0.0, //
-        0.0, 0.0, 1.0, 0.0, 0.0, dt, //
-        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, //
-    ];
-    let mut q = vec![0.0_f64; state_dim * state_dim];
-    for i in 0..3 {
-        q[i * state_dim + i] = filter_config.pos_process_noise[0].max(1e-6);
-    }
-    for i in 3..6 {
-        q[i * state_dim + i] = filter_config.r_gps_vel[0].max(1e-6);
-    }
-    let h = vec![
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, //
-    ];
-    let mut r = vec![0.0_f64; measurement_dim * measurement_dim];
-    for i in 0..3 {
-        r[i * measurement_dim + i] = filter_config.r_gps_pos[0].max(1e-6);
-    }
-    for i in 3..6 {
-        r[i * measurement_dim + i] = filter_config.r_gps_vel[0].max(1e-6);
-    }
-    let mut p0 = vec![0.0_f64; state_dim * state_dim];
-    for i in 0..state_dim {
-        p0[i * state_dim + i] = 100.0;
+    let transition = constant_velocity_transition_matrix(AUX_FILTER_TIMESTEP_S);
+    let q = build_aux_process_noise(filter_config);
+    let h = identity6();
+    let r = build_aux_measurement_noise(filter_config);
+    let mut p0 = vec![0.0_f64; AUX_FILTER_STATE_DIM * AUX_FILTER_STATE_DIM];
+    for i in 0..AUX_FILTER_STATE_DIM {
+        p0[i * AUX_FILTER_STATE_DIM + i] = 100.0;
     }
 
-    let mut filter = match KalmanFilterBuilder::<f64>::new(state_dim, measurement_dim)
-        .initial_state(vec![0.0; state_dim])
-        .initial_covariance(p0)
-        .transition_matrix(transition)
-        .process_noise(q)
-        .observation_matrix(h)
-        .measurement_noise(r)
-        .build()
-    {
-        Ok(f) => f,
-        Err(err) => {
-            warn!("Kalman filter initialization failed: {err}");
-            return None;
-        }
-    };
+    let mut filter =
+        match KalmanFilterBuilder::<f64>::new(AUX_FILTER_STATE_DIM, AUX_FILTER_MEASUREMENT_DIM)
+            .initial_state(vec![0.0; AUX_FILTER_STATE_DIM])
+            .initial_covariance(p0)
+            .transition_matrix(transition)
+            .process_noise(q)
+            .observation_matrix(h)
+            .measurement_noise(r)
+            .build()
+        {
+            Ok(f) => f,
+            Err(err) => {
+                warn!("Kalman filter initialization failed: {err}");
+                return None;
+            }
+        };
 
     let mut est_pos_x = Vec::with_capacity(sensor_data.time.len());
     let mut est_pos_y = Vec::with_capacity(sensor_data.time.len());
@@ -987,7 +1007,7 @@ fn run_kalman_filter_algorithm(
         }
 
         let x = &filter.x;
-        if x.len() == state_dim {
+        if x.len() == AUX_FILTER_STATE_DIM {
             est_pos_x.push(x[0]);
             est_pos_y.push(x[1]);
             est_pos_z.push(x[2]);
@@ -1013,57 +1033,31 @@ fn run_information_filter_algorithm(
     sensor_data: &aloe_sim::sensor::SensorData,
     filter_config: &FilterConfig,
 ) -> Option<AlgorithmFilterData> {
-    let state_dim = 6usize;
-    let measurement_dim = 6usize;
-    let dt = 0.001_f64;
-    let mut p0 = vec![0.0_f64; state_dim * state_dim];
-    for i in 0..state_dim {
-        p0[i * state_dim + i] = 100.0;
+    let mut p0 = vec![0.0_f64; AUX_FILTER_STATE_DIM * AUX_FILTER_STATE_DIM];
+    for i in 0..AUX_FILTER_STATE_DIM {
+        p0[i * AUX_FILTER_STATE_DIM + i] = 100.0;
     }
-    let mut y0 = vec![0.0_f64; state_dim * state_dim];
-    for i in 0..state_dim {
-        y0[i * state_dim + i] = 1.0 / p0[i * state_dim + i];
+    let mut y0 = vec![0.0_f64; AUX_FILTER_STATE_DIM * AUX_FILTER_STATE_DIM];
+    for i in 0..AUX_FILTER_STATE_DIM {
+        y0[i * AUX_FILTER_STATE_DIM + i] = 1.0 / p0[i * AUX_FILTER_STATE_DIM + i];
     }
 
-    let transition = vec![
-        1.0, 0.0, 0.0, dt, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, dt, 0.0, //
-        0.0, 0.0, 1.0, 0.0, 0.0, dt, //
-        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, //
-    ];
-    let mut q = vec![0.0_f64; state_dim * state_dim];
-    for i in 0..3 {
-        q[i * state_dim + i] = filter_config.pos_process_noise[0].max(1e-6);
-    }
-    for i in 3..6 {
-        q[i * state_dim + i] = filter_config.r_gps_vel[0].max(1e-6);
-    }
-    let h = vec![
-        1.0, 0.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 1.0, 0.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 1.0, 0.0, //
-        0.0, 0.0, 0.0, 0.0, 0.0, 1.0, //
-    ];
-    let mut r = vec![0.0_f64; measurement_dim * measurement_dim];
-    for i in 0..3 {
-        r[i * measurement_dim + i] = filter_config.r_gps_pos[0].max(1e-6);
-    }
-    for i in 3..6 {
-        r[i * measurement_dim + i] = filter_config.r_gps_vel[0].max(1e-6);
-    }
+    let transition = constant_velocity_transition_matrix(AUX_FILTER_TIMESTEP_S);
+    let q = build_aux_process_noise(filter_config);
+    let h = identity6();
+    let r = build_aux_measurement_noise(filter_config);
 
-    let mut filter = match InformationFilterBuilder::<f64>::new(state_dim, measurement_dim)
-        .initial_information_matrix(y0)
-        .initial_information_vector(vec![0.0; state_dim])
-        .state_transition_matrix(transition)
-        .process_noise(q)
-        .observation_matrix(h)
-        .measurement_noise(r)
-        .build()
+    let mut filter = match InformationFilterBuilder::<f64>::new(
+        AUX_FILTER_STATE_DIM,
+        AUX_FILTER_MEASUREMENT_DIM,
+    )
+    .initial_information_matrix(y0)
+    .initial_information_vector(vec![0.0; AUX_FILTER_STATE_DIM])
+    .state_transition_matrix(transition)
+    .process_noise(q)
+    .observation_matrix(h)
+    .measurement_noise(r)
+    .build()
     {
         Ok(f) => f,
         Err(err) => {
@@ -1092,7 +1086,7 @@ fn run_information_filter_algorithm(
         }
 
         match filter.get_state() {
-            Ok(state) if state.len() == state_dim => {
+            Ok(state) if state.len() == AUX_FILTER_STATE_DIM => {
                 est_pos_x.push(state[0]);
                 est_pos_y.push(state[1]);
                 est_pos_z.push(state[2]);
@@ -1569,9 +1563,6 @@ fn run_full_simulation(config: &SimConfig) -> FullSimulationResponse {
                 .map(FilterAlgorithm::as_str)
                 .map(str::to_string)
                 .collect();
-            if available_filter_algorithms.is_empty() {
-                available_filter_algorithms.push(FilterAlgorithm::Eskf.as_str().to_string());
-            }
             let requested_active = config
                 .filter
                 .active_algorithm
