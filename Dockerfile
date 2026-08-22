@@ -17,16 +17,27 @@ RUN npm --prefix frontend run build:embedded
 RUN cargo build --release
 
 # Runtime stage
-FROM debian:trixie-slim
+#
+# distroless/cc provides glibc, libstdc++, libgcc and ca-certificates -- exactly
+# what this binary links against (verified with ldd: libstdc++.so.6, libm.so.6,
+# libgcc_s.so.1, libc.so.6) -- and nothing else. No shell, no package manager.
+#
+# The previous debian:trixie-slim base carried the whole Debian userland, and
+# that is where every CVE in this image came from: openssl, libssl3t64,
+# bsdutils, libblkid1, libmount1, libsmartcols1 -- none of which the binary
+# actually uses. Dropping the userland removes them at the source rather than
+# chasing point releases.
+#
+# `cc` (not `static`) because the binary is dynamically linked; `nonroot` so it
+# does not run as uid 0.
+FROM gcr.io/distroless/cc-debian13:nonroot
 
-# Install ca-certificates for HTTPS if needed
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
-
-# Copy the binary
 COPY --from=builder /app/target/release/aloe /usr/local/bin/aloe
 
-# Expose port for GUI
 EXPOSE 8080
+USER nonroot
 
-# Default to GUI
-CMD ["aloe", "gui"]
+# distroless has no shell, so the entrypoint must be an absolute path -- a bare
+# "aloe" would rely on PATH resolution that does not exist here.
+ENTRYPOINT ["/usr/local/bin/aloe"]
+CMD ["gui"]
